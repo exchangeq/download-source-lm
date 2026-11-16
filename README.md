@@ -1,27 +1,39 @@
-# Download source
+# LM Downloader
 
-A dual-channel Android download manager, packaged in one repository.
+基于 [Maxx-EX/download-source](https://github.com/Maxx-EX/download-source) 重构的独立衍生版，已获原作者授权。署名 **LM**，独立包名与自有签名，可与原版共存安装。
 
-- **Zeta** — test channel, `com.downloadsource.zeta`
-- **Omega** — release channel, `com.downloadsource.omega`
+## 与上游的关系
 
-## What it does
+- 上游基线：v7.0.4（Apache-2.0）
+- 逐条改动见 [CHANGELOG.md](CHANGELOG.md)；原作者署名见 [NOTICE](NOTICE)；许可证见 [LICENSE](LICENSE)
 
-- Multi-threaded segmented downloader, native merge step (Zero-core, NDK)
-- Custom download directory (SAF)
-- Built-in browser with ad / redirect filtering for common Baidu jump schemes
-- GitHub mirror acceleration, user-editable source list
-- Persistent tasks, foreground service keeps them alive in background
-- Light / dark themes, gradient UI
+## 功能
 
-## Build
+- 多线程分片直写、三重长度探测、流式兜底，支持暂停续传
+- 队列调度：并发位空出即补位，不会出现排队卡死
+- Zero-core（NDK）原生合并，Java 降级兜底
+- 内置浏览器：多标签、书签、历史、页内查找、桌面 UA、文字缩放、资源嗅探
+- 自定义下载目录（SAF）
+- GitHub 镜像加速（默认直连）
+- 任务持久化、前台服务、通知栏进度
+- 六套渐变主题，深浅两态
+
+## 安装包
+
+- 正式通道：`com.lm.downloader`，应用名「LM 下载器」
+- 内测通道：`com.lm.downloader.beta`，应用名「LM 下载器 Beta」
+
+APK 由 GitHub Actions 使用仓库密钥签名，Releases 页面直接下载。
+
+## 构建
 
 ```bash
-gradle :app:assembleZetaDebug :app:assembleOmegaDebug
+gradle :app:assembleOmegaRelease
 ```
 
-Artifacts land in app/build/outputs/apk/<flavor>/debug/.
+签名需要环境变量：`KEYSTORE_PATH`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`。
 
-License
+## 说明
 
-Apache-2.0
+- 请遵守当地法律与目标站点条款，仅下载你有权获取的内容
+- 纯本地客户端，不含后端服务

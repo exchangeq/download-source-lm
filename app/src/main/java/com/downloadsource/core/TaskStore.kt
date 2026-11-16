@@ -14,6 +14,8 @@ import kotlinx.coroutines.withContext
 
 object TaskStore {
     private val gson = Gson()
+    // 独立作用域替代 GlobalScope，落库不再泄漏到全局
+    private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     private val dbMutex = Mutex() // 修复：并发写入锁
 
     suspend fun loadAsync(context: Context): List<DownloadTask> = withContext(Dispatchers.IO) {
@@ -43,7 +45,7 @@ object TaskStore {
             )
         }
         
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        ioScope.launch {
             dbMutex.withLock {
                 // 修复：先清空全表，再插入最新数据，绝无幽灵任务
                 dao.clearAll()

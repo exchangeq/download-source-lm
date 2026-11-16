@@ -52,15 +52,16 @@ class Segmenter(private val client: OkHttpClient) {
             return@coroutineScope streamDownload(taskId, url, outFile, headers, onTick)
         }
         
-        val n = if (supportsRange && total > 2L shl 20) parts else 1
+        val n = if (supportsRange && total > 2L shl 20) parts.coerceIn(1, 16) else 1
         val downloaded = AtomicLong(0)
         val rateLimiter = GlobalRateLimiter(if (speedLimitKb > 0) speedLimitKb * 1024 else 0)
 
+        val counters = List(n) { AtomicLong(0) }
         var lastTick = System.currentTimeMillis(); var lastBytes = 0L
         val ticker = launch(Dispatchers.Default) {
             while (isActive) {
-                delay(300)
-                val now = System.currentTimeMillis(); val cur = downloaded.get()
+                delay(1000)
+                val now = System.currentTimeMillis(); val cur = counters.sumOf { it.get() }
                 val speed = if (now > lastTick) (cur - lastBytes) * 1000 / (now - lastTick) else 0
                 lastTick = now; lastBytes = cur
                 onTick(cur, total, speed)
@@ -72,7 +73,7 @@ class Segmenter(private val client: OkHttpClient) {
             (0 until n).map { i ->
                 async(Dispatchers.IO) {
                     val start = i * total / n; val end = if (i == n - 1) total - 1 else (i + 1) * total / n - 1
-                    retryDownloadRange(taskId, url, start, end, outFile, downloaded, rateLimiter, headers)
+                    retryDownloadRange(taskId, url, start, end, outFile, counters[i], rateLimiter, headers, n == 1)
                 }
             }.awaitAll()
             ticker.cancel()
@@ -89,7 +90,7 @@ class Segmenter(private val client: OkHttpClient) {
     private suspend fun probeFileSize(url: String, headers: okhttp3.Headers): Pair<Long, Boolean> = withContext(Dispatchers.IO) {
         // 1. 尝试 HEAD
         try {
-            val headReq = Request.Builder().url(url).headers(headers).head().build()
+            val headReq = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity").head().build()
             client.newCall(headReq).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val len = resp.header("Content-Length")?.toLongOrNull() ?: -1L
@@ -101,7 +102,7 @@ class Segmenter(private val client: OkHttpClient) {
 
         // 2. 尝试 GET Range: 0-0
         try {
-            val rangeReq = Request.Builder().url(url).headers(headers).header("Range", "bytes=0-0").build()
+            val rangeReq = Request.Builder().url(url).headers(headers).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").build()
             client.newCall(rangeReq).execute().use { resp ->
                 if (resp.code == 206) {
                     val contentRange = resp.header("Content-Range")
@@ -120,9 +121,10 @@ class Segmenter(private val client: OkHttpClient) {
 
     // 修复：没有大小信息时的流式下载
     private suspend fun streamDownload(taskId: String, url: String, outFile: File, headers: okhttp3.Headers, onTick: (Long, Long, Long) -> Unit): File = coroutineScope {
-        val req = Request.Builder().url(url).headers(headers).build()
+        val req = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity").build()
         val call = client.newCall(req)
-        activeCalls.getOrPut(taskId) { mutableListOf() }.add(call)
+        activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
+        val partFile = File(outFile.parentFile, ".${outFile.name}.part")
         
         try {
             withContext(Dispatchers.IO) {
@@ -130,7 +132,7 @@ class Segmenter(private val client: OkHttpClient) {
                     if (!resp.isSuccessful) error("HTTP ${resp.code}")
                     val total = resp.header("Content-Length")?.toLongOrNull() ?: -1L
                     resp.body?.byteStream()?.use { ins ->
-                        outFile.outputStream().use { out ->
+                        partFile.outputStream().use { out ->
                             val buf = ByteArray(1024 * 1024)
                             var downloaded = 0L
                             var lastTick = System.currentTimeMillis()
@@ -151,6 +153,7 @@ class Segmenter(private val client: OkHttpClient) {
                     }
                 }
             }
+            if (!partFile.renameTo(outFile)) { partFile.copyTo(outFile, true); partFile.delete() }
             onTick(outFile.length(), outFile.length(), 0L)
             outFile
         } finally {
@@ -158,26 +161,43 @@ class Segmenter(private val client: OkHttpClient) {
         }
     }
 
-    private suspend fun retryDownloadRange(taskId: String, url: String, start: Long, end: Long, file: File, downloaded: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers) {
-        var retries = 5
-        while (retries > 0) {
+    private suspend fun retryDownloadRange(taskId: String, url: String, start: Long, end: Long, file: File, counter: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers, allow200: Boolean) {
+        var attempt = 0
+        while (attempt < 4) {
             if (!currentCoroutineContext().isActive) return
-            try { downloadRange(taskId, url, start, end, file, downloaded, rateLimiter, headers); return } 
-            catch (e: Exception) { 
+            // 每次重试都从本片起点整段重下，计数归零，避免进度累加虚高
+            counter.set(0)
+            try {
+                downloadRange(taskId, url, start, end, file, counter, rateLimiter, headers, allow200)
+                return
+            } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                retries--; if (retries == 0) throw e; delay(1500)
+                attempt++
+                if (attempt >= 4) throw e
+                delay(minOf(10_000L, 800L * (1L shl attempt)))
             }
         }
     }
 
-    private suspend fun downloadRange(taskId: String, url: String, start: Long, end: Long, file: File, downloaded: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers) {
-        val req = Request.Builder().url(url).headers(headers).header("Range", "bytes=$start-$end").build()
+    private suspend fun downloadRange(taskId: String, url: String, start: Long, end: Long, file: File, downloaded: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers, allow200: Boolean) {
+        // 必须显式声明 identity：否则服务端 gzip 会打乱字节偏移
+        val req = Request.Builder().url(url).headers(headers)
+            .header("Range", "bytes=$start-$end")
+            .header("Accept-Encoding", "identity")
+            .build()
         val call = client.newCall(req)
-        activeCalls.getOrPut(taskId) { mutableListOf() }.add(call)
+        activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
         
         try {
             call.execute().use { resp ->
-                if (!resp.isSuccessful && resp.code != 206) throw Exception("分片失败 HTTP ${resp.code}")
+                if (resp.code != 206 && !(allow200 && resp.code == 200)) {
+                    throw Exception("分片未按区间返回：HTTP ${resp.code}")
+                }
+                // 校验服务端返回的起点，防止错位写入
+                if (resp.code == 206) {
+                    val crStart = resp.header("Content-Range")?.substringAfter("bytes ")?.substringBefore("-")?.trim()?.toLongOrNull()
+                    if (crStart != null && crStart != start) throw Exception("区间起点不一致：请求 $start，返回 $crStart")
+                }
                 RandomAccessFile(file, "rw").use { raf ->
                     raf.seek(start)
                     resp.body?.byteStream()?.use { ins ->
@@ -215,25 +235,27 @@ class Segmenter(private val client: OkHttpClient) {
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     val partFile = File(tmpDir, "$index.ts")
-                    if (!partFile.exists()) {
+                    if (!partFile.exists() || partFile.length() == 0L) {
                         var r = 3
                         while (r > 0) {
                             if (!isActive) return@withPermit
+                            var callRef: okhttp3.Call? = null
                             try {
                                 val call = client.newCall(Request.Builder().url(segment.url).headers(headers).build())
-                                activeCalls.getOrPut(taskId) { mutableListOf() }.add(call)
-                                call.execute().use { resp -> 
+                                callRef = call
+                                activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
+                                call.execute().use { resp ->
+                                    if (!resp.isSuccessful) throw Exception("分片 HTTP ${resp.code}")
                                     var bytes = resp.body?.bytes() ?: ByteArray(0)
                                     if (segment.key != null && segment.iv != null) bytes = decryptAES(bytes, segment.key, segment.iv)
                                     partFile.writeBytes(bytes)
-                                    java.io.FileOutputStream(partFile, true).use { it.fd.sync() }
                                 }
                                 break
-                            } catch (e: Exception) { 
+                            } catch (e: Exception) {
                                 if (e is CancellationException) throw e
-                                r--; if (r == 0) throw e; delay(1000) 
-                            } finally { 
-                                activeCalls[taskId]?.removeAll { it.isCanceled() } 
+                                r--; if (r == 0) throw e; delay(1000)
+                            } finally {
+                                callRef?.let { activeCalls[taskId]?.remove(it) }
                             }
                         }
                     }

@@ -17,9 +17,10 @@ val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
 android {
     namespace = "com.downloadsource"
     compileSdk = 34
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
-        applicationId = "com.downloadsource"
+        applicationId = "com.lm.downloader"
         minSdk = 24
         targetSdk = 34
         versionCode = injectedVersionCode
@@ -33,16 +34,14 @@ android {
     productFlavors {
         create("zeta") {
             dimension = "channel"
-            applicationIdSuffix = ".zeta"
-            versionNameSuffix = "-zeta"
-            resValue("string", "app_name", "Download source Zeta")
+            applicationIdSuffix = ".beta"
+            versionNameSuffix = "-beta"
+            resValue("string", "app_name", "LM 下载器 Beta")
             buildConfigField("String", "CHANNEL", "\"zeta\"")
         }
         create("omega") {
             dimension = "channel"
-            applicationIdSuffix = ".omega"
-            versionNameSuffix = "-omega"
-            resValue("string", "app_name", "Download source Omega")
+            resValue("string", "app_name", "LM 下载器")
             buildConfigField("String", "CHANNEL", "\"omega\"")
         }
     }
@@ -61,9 +60,12 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            // 关闭 R8：避免 Gson TypeToken / Room 反射被裁坏
+            isMinifyEnabled = false
+            isShrinkResources = false
+            if (System.getenv("KEYSTORE_PATH") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug { isMinifyEnabled = false }

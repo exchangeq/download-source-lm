@@ -41,4 +41,31 @@ object BrowserHistoryStore {
     fun clearHistory(ctx: Context) {
          ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().remove(KEY_HISTORY).apply()
     }
+
+    // ---------- 书签 ----------
+    data class BookmarkEntry(val url: String, val title: String)
+
+    fun getBookmarks(ctx: Context): List<BookmarkEntry> {
+        val json = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString("bookmarks", null) ?: return emptyList()
+        val type = object : TypeToken<List<BookmarkEntry>>() {}.type
+        return try { gson.fromJson(json, type) ?: emptyList() } catch (e: Exception) { emptyList() }
+    }
+
+    fun isBookmarked(ctx: Context, url: String): Boolean = getBookmarks(ctx).any { it.url == url }
+
+    fun addBookmark(ctx: Context, url: String, title: String) {
+        if (url.isBlank()) return
+        val list = getBookmarks(ctx).toMutableList()
+        if (list.none { it.url == url }) list.add(0, BookmarkEntry(url, title.ifBlank { url }))
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString("bookmarks", gson.toJson(list)).apply()
+    }
+
+    fun removeBookmark(ctx: Context, url: String) {
+        val list = getBookmarks(ctx).filterNot { it.url == url }
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString("bookmarks", gson.toJson(list)).apply()
+    }
+
+    fun clearBookmarks(ctx: Context) {
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().remove("bookmarks").apply()
+    }
 }

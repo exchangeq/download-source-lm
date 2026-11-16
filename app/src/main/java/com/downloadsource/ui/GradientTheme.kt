@@ -44,6 +44,18 @@ val RoseDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFFFF9A9A), Color
 val ForestLightPalette = LightPalette.copy(primary = listOf(Color(0xFF48BB78), Color(0xFF68D391)), background = listOf(Color(0xFFF0FDF4), Color(0xFFDCFCE7)))
 val ForestDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFF68D391), Color(0xFF48BB78)), background = listOf(Color(0xFF022C22), Color(0xFF064E3B)))
 
+// 日落
+val SunsetLightPalette = LightPalette.copy(primary = listOf(Color(0xFFFF8A65), Color(0xFFFFB74D)), background = listOf(Color(0xFFFFF6EF), Color(0xFFFFE6D5)))
+val SunsetDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFFFF9E80), Color(0xFFFFCC80)), background = listOf(Color(0xFF2A1B12), Color(0xFF3A2418)))
+
+// 深海
+val DeepSeaLightPalette = LightPalette.copy(primary = listOf(Color(0xFF2F6FED), Color(0xFF14B8A6)), background = listOf(Color(0xFFEFF6FF), Color(0xFFDBEAFE)))
+val DeepSeaDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFF5B9CF8), Color(0xFF2DD4BF)), background = listOf(Color(0xFF081426), Color(0xFF0E2038)))
+
+// 赛博
+val CyberLightPalette = LightPalette.copy(primary = listOf(Color(0xFF8B5CF6), Color(0xFF22D3EE)), background = listOf(Color(0xFFF6F2FF), Color(0xFFE8E1FF)))
+val CyberDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFFA78BFA), Color(0xFF67E8F9)), background = listOf(Color(0xFF120C24), Color(0xFF1B1035)))
+
 val LocalPalette = staticCompositionLocalOf { LightPalette }
 
 @Composable
@@ -53,6 +65,9 @@ fun rememberPalette(): GradientPalette {
     return when (ThemeStore.getThemeStyle(ctx)) {
         1 -> if (isDark) RoseDarkPalette else RoseLightPalette
         2 -> if (isDark) ForestDarkPalette else ForestLightPalette
+        3 -> if (isDark) SunsetDarkPalette else SunsetLightPalette
+        4 -> if (isDark) DeepSeaDarkPalette else DeepSeaLightPalette
+        5 -> if (isDark) CyberDarkPalette else CyberLightPalette
         else -> if (isDark) DarkPalette else LightPalette
     }
 }
