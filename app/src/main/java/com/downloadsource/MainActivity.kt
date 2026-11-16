@@ -1,0 +1,441 @@
+package com.downloadsource
+
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.downloadsource.core.DownloadManager
+import com.downloadsource.core.UpdateManager
+import com.downloadsource.storage.BrowserPrefs
+import com.downloadsource.storage.DirStore
+import com.downloadsource.ui.*
+import com.downloadsource.utils.PyRuleEngine
+import java.io.File
+import java.net.URLEncoder
+import kotlin.math.roundToInt
+
+class MainActivity : ComponentActivity() {
+    private fun shouldLock(): Boolean {
+        val pwd = ThemeStore.getLockPassword(this) ?: return false
+        return (System.currentTimeMillis() - ThemeStore.getLastUnlockTime(this)) > 900_000L
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
+        PyRuleEngine.init(this)
+        setContent {
+            val palette = rememberPalette()
+            Box(Modifier.fillMaxSize().background(palette.background.first())) {
+                GradientBackground(palette) {
+                    MaterialTheme(typography = SafeTypography) {
+                        var isLocked by remember { mutableStateOf(shouldLock()) }
+                        var clipboardUrl by remember { mutableStateOf<String?>(null) }
+                        val lastClipUrl = remember { mutableStateOf("") }
+                        
+                        LifecycleResumeEffect(Unit) {
+                            if (shouldLock()) isLocked = true
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val text = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
+                            if (text != null && (text.startsWith("http") || text.contains("pan.quark"))) {
+                                if (text != lastClipUrl.value) {
+                                    clipboardUrl = text
+                                    lastClipUrl.value = text
+                                }
+                            }
+                            onPauseOrDispose {}
+                        }
+
+                        if (isLocked) { 
+                            SecureLockScreen(onUnlock = { isLocked = false }) 
+                        } else {
+                            var updateInfo by remember { mutableStateOf<UpdateManager.ReleaseInfo?>(null) }
+                            LaunchedEffect(Unit) { updateInfo = UpdateManager.checkUpdate(BuildConfig.VERSION_NAME.substringBefore("-")) }
+                            
+                            if (clipboardUrl != null) {
+                                AlertDialog(
+                                    onDismissRequest = { clipboardUrl = null },
+                                    title = { Text("检测到剪贴板链接 (★ ω ★)") },
+                                    text = { Text("发现: ${clipboardUrl?.take(30)}...\n是否立即下载？") },
+                                    confirmButton = { TextButton(onClick = { 
+                                        DownloadManager.add(this@MainActivity, clipboardUrl!!, null, 8, 0, emptyMap(), DirStore.resolveDownloadDir(this@MainActivity))
+                                        clipboardUrl = null 
+                                    }) { Text("立即下载 (๑•̀ㅂ•́)و✧") } },
+                                    dismissButton = { TextButton(onClick = { clipboardUrl = null }) { Text("忽略") } }
+                                )
+                            }
+                            
+                            if (updateInfo != null) { 
+                                val ctx = LocalContext.current
+                                AlertDialog(
+                                    onDismissRequest = { updateInfo = null }, 
+                                    title = { Text("发现新版本 v${updateInfo?.version}") }, 
+                                    text = { Text(updateInfo?.changelog ?: "") }, 
+                                    confirmButton = { 
+                                        TextButton(onClick = { 
+                                            DownloadManager.add(ctx, updateInfo!!.downloadUrl, "DownloadSource_Update_${updateInfo?.version}.apk", 8, 0, emptyMap(), DirStore.resolveDownloadDir(ctx))
+                                            updateInfo = null 
+                                        }) { Text("立即更新") } 
+                                    },
+                                    dismissButton = { TextButton(onClick = { updateInfo = null }) { Text("稍后") } }
+                                )
+                            }
+                            
+                            MainScaffold()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SecureLockScreen(onUnlock: () -> Unit) {
+    val ctx = LocalContext.current
+    val palette = LocalPalette.current
+    var inputPwd by remember { mutableStateOf("") }
+    var errorMsg by remember { mutableStateOf("") }
+    val keys = listOf("1","2","3","4","5","6","7","8","9","Q","W","E","R","T","Y","U","I","O","P","A","S","D","F","G","H","J","K","L","Z","X","C","V","B","N","M","0","DEL")
+    Column(Modifier.fillMaxSize().background(palette.background.first()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Default.Lock, null, modifier = Modifier.size(64.dp), tint = palette.primary.first())
+        Text("安全验证 (●'◡'●)", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = palette.onSurface)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(vertical = 24.dp)) { repeat(inputPwd.length.coerceAtMost(8)) { Box(Modifier.size(16.dp).clip(CircleShape).background(palette.primary.first())) } }
+        Text(errorMsg, color = Color.Red, fontSize = 14.sp)
+        LazyVerticalGrid(columns = GridCells.Fixed(6), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().height(300.dp)) {
+            items(keys) { key ->
+                Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp)).background(palette.surface).clickable {
+                    errorMsg = ""
+                    if (key == "DEL") { if (inputPwd.isNotEmpty()) inputPwd = inputPwd.dropLast(1) } else { if (inputPwd.length < 8) inputPwd += key }
+                    if (inputPwd.length >= 4) { if (ThemeStore.verifyLockPassword(ctx, inputPwd)) onUnlock() else if (inputPwd.length == 8) { errorMsg = "密码错误 (￣ε(#￣)"; inputPwd = "" } }
+                }, contentAlignment = Alignment.Center) { if (key == "DEL") Icon(Icons.Default.Backspace, null, tint = palette.onSurface) else Text(key, fontSize = 20.sp, color = palette.onSurface) }
+            }
+        }
+    }
+}
+
+enum class Tab { DOWNLOAD, BROWSER, LIBRARY }
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun MainScaffold() {
+    val ctx = LocalContext.current
+    var currentTab by remember { mutableStateOf(Tab.DOWNLOAD) }
+    var playingUri by remember { mutableStateOf<Uri?>(null) }
+    
+    // 修复：用于快速在浏览器打开指定网址
+    var browserUrlToLoad by remember { mutableStateOf<String?>(null) }
+
+    if (playingUri != null) {
+        VideoPlayerScreen(uri = playingUri!!, onBack = { playingUri = null })
+        return
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val screenWidthPx = with(density) { maxWidth.toPx() }
+        val screenHeightPx = with(density) { maxHeight.toPx() }
+        
+        Scaffold(
+            containerColor = Color.Transparent,
+            bottomBar = {
+                NavigationBar(containerColor = LocalPalette.current.surface) {
+                    NavigationBarItem(selected = currentTab == Tab.DOWNLOAD, onClick = { currentTab = Tab.DOWNLOAD }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("下载") })
+                    NavigationBarItem(selected = currentTab == Tab.BROWSER, onClick = { currentTab = Tab.BROWSER }, icon = { Icon(Icons.Default.Search, null) }, label = { Text("搜索") })
+                    NavigationBarItem(selected = currentTab == Tab.LIBRARY, onClick = { currentTab = Tab.LIBRARY }, icon = { Icon(Icons.Default.Folder, null) }, label = { Text("文件库") })
+                }
+            }
+        ) { padding ->
+            Box(Modifier.padding(padding).fillMaxSize()) {
+                when (currentTab) {
+                    Tab.DOWNLOAD -> DownloadScreen(
+                        onOpenBrowserUrl = { url -> browserUrlToLoad = url; currentTab = Tab.BROWSER }
+                    )
+                    Tab.BROWSER -> BrowserScreen(
+                        onPlayVideo = { playingUri = Uri.fromFile(it) },
+                        onPlayStream = { playingUri = Uri.parse(it) },
+                        triggerSniff = false, onSniffHandled = {},
+                        triggerHistory = false, onHistoryHandled = {},
+                        externalUrlToLoad = browserUrlToLoad,
+                        onUrlLoaded = { browserUrlToLoad = null }
+                    )
+                    Tab.LIBRARY -> MediaLibraryScreen(onPlayVideo = { playingUri = Uri.fromFile(it) })
+                }
+            }
+        }
+        
+        var offsetX by remember { mutableFloatStateOf(screenWidthPx / 2) }
+        var offsetY by remember { mutableFloatStateOf(screenHeightPx - 400f) }
+        var showMenu by remember { mutableStateOf(false) }
+        val ballSize = 48.dp
+        val ballSizePx = with(density) { ballSize.toPx() }
+
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
+                .size(ballSize)
+                .alpha(if (showMenu) 1f else 0.8f)
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { showMenu = false },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            offsetX = (offsetX + dragAmount.x).coerceIn(0f, screenWidthPx - ballSizePx)
+                            offsetY = (offsetY + dragAmount.y).coerceIn(0f, screenHeightPx - ballSizePx)
+                        }
+                    )
+                }
+                .clip(CircleShape)
+                .background(LocalPalette.current.primary.first())
+                .combinedClickable(onClick = { showMenu = !showMenu }, onLongClick = { showMenu = true }),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Menu, "Menu", tint = Color.White)
+        }
+
+        if (showMenu) {
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                offset = DpOffset(with(density) { offsetX.toDp() }, with(density) { offsetY.toDp() })
+            ) {
+                DropdownMenuItem(text = { Text("下载列表 (●'◡'●)") }, leadingIcon = { Icon(Icons.Default.Home, null) }, onClick = { currentTab = Tab.DOWNLOAD; showMenu = false })
+                DropdownMenuItem(text = { Text("浏览器 (★ ω ★)") }, leadingIcon = { Icon(Icons.Default.Search, null) }, onClick = { currentTab = Tab.BROWSER; showMenu = false })
+                DropdownMenuItem(text = { Text("文件库 (￣▽￣)") }, leadingIcon = { Icon(Icons.Default.Folder, null) }, onClick = { currentTab = Tab.LIBRARY; showMenu = false })
+                HorizontalDivider()
+                DropdownMenuItem(text = { Text("设置 (๑•̀ㅂ•́)و✧") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { 
+                    showMenu = false
+                    ctx.startActivity(Intent(ctx, SettingsActivity::class.java))
+                })
+            }
+        }
+    }
+}
+
+@Composable
+fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
+    val ctx = LocalContext.current
+    val palette = LocalPalette.current
+    val tasks by DownloadManager.tasks.collectAsStateWithLifecycle()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    
+    var showAddDialog by remember { mutableStateOf(false) }
+    var prefillUrl by remember { mutableStateOf("") }
+    var dirPath by remember { mutableStateOf(DirStore.resolveDownloadDir(ctx).absolutePath) }
+    var searchQuery by remember { mutableStateOf("") }
+    var filterMode by remember { mutableStateOf("全部") }
+    val filters = listOf("全部", "下载中", "已完成", "失败")
+
+    // 多选模式状态
+    var isSelectionMode by remember { mutableStateOf(false) }
+    val selectedTasks = remember { mutableStateListOf<String>() }
+
+    val shortcuts = listOf(
+        Pair("哔哩哔哩", "https://m.bilibili.com"),
+        Pair("知乎", "https://www.zhihu.com"),
+        Pair("GitHub", "https://github.com"),
+        Pair("百度", "https://www.baidu.com")
+    )
+
+    val doSearch = {
+        val q = searchQuery.trim()
+        if (q.isNotEmpty()) {
+            keyboardController?.hide()
+            if (q.startsWith("http") || q.contains(".com") || q.contains(".cn") || q.contains("pan.") || q.contains("lanzou")) {
+                DownloadManager.add(ctx, q, null, 8, 0, emptyMap(), File(dirPath))
+                searchQuery = ""
+            } else {
+                val engine = BrowserPrefs.getEngine(ctx)
+                val encoded = URLEncoder.encode(q, "UTF-8")
+                val url = when(engine) {
+                    "Baidu" -> "https://www.baidu.com/s?wd=$encoded"
+                    "Google" -> "https://www.google.com/search?q=$encoded"
+                    else -> "https://www.bing.com/search?q=$encoded"
+                }
+                onOpenBrowserUrl(url)
+            }
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (isSelectionMode) "已选择 ${selectedTasks.size} 项" else "Download source", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = palette.onSurface)
+                        if (!isSelectionMode) {
+                            Spacer(Modifier.width(8.dp))
+                            Box(Modifier.background(if (BuildConfig.CHANNEL == "zeta") Color.Red else Color(0xFF3B82F6), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 2.dp)) {
+                                Text(if (BuildConfig.CHANNEL == "zeta") "内测" else "发行", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                    Text("${BuildConfig.CHANNEL.uppercase()} · v${BuildConfig.VERSION_NAME}", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                }
+                
+                if (isSelectionMode) {
+                    // 一键移入保险箱按钮
+                    IconButton(onClick = {
+                        selectedTasks.forEach { DownloadManager.moveToVault(ctx, it) }
+                        selectedTasks.clear(); isSelectionMode = false
+                    }) { Icon(Icons.Default.Lock, "移入保险箱", tint = palette.primary.first()) }
+                    
+                    IconButton(onClick = {
+                        selectedTasks.forEach { DownloadManager.remove(ctx, it) }
+                        selectedTasks.clear(); isSelectionMode = false
+                    }) { Icon(Icons.Default.Delete, "删除", tint = Color.Red) }
+                    
+                    IconButton(onClick = { isSelectionMode = false; selectedTasks.clear() }) { Icon(Icons.Default.Close, "取消", tint = palette.onSurface) }
+                } else {
+                    if (tasks.isNotEmpty()) IconButton(onClick = { isSelectionMode = true }) { Icon(Icons.Default.Checklist, "多选", tint = palette.onSurface) }
+                    IconButton(onClick = { ctx.startActivity(Intent(ctx, NetDiskActivity::class.java)) }) { Icon(Icons.Default.Cloud, "网盘", tint = palette.primary.first()) }
+                    IconButton(onClick = { ctx.startActivity(Intent(ctx, SettingsActivity::class.java)) }) { Icon(Icons.Default.Settings, "设置", tint = palette.onSurface) }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            
+            if (!isSelectionMode) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(palette.surface).padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    Icon(Icons.Default.Search, null, tint = palette.onSurfaceDim)
+                    BasicTextField(
+                        value = searchQuery, onValueChange = { searchQuery = it }, textStyle = TextStyle(color = palette.onSurface),
+                        cursorBrush = SolidColor(palette.primary.first()), singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go), keyboardActions = KeyboardActions(onGo = { doSearch() }),
+                        decorationBox = { inner -> if (searchQuery.isEmpty()) Text("输入链接或搜索关键词... (●'◡'●)", color = palette.onSurfaceDim); inner() },
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { doSearch() }) { Icon(Icons.Default.ArrowForward, null, tint = palette.primary.first()) }
+                    }
+                }
+                
+                Spacer(Modifier.height(16.dp))
+                
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(shortcuts) { item ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { 
+                            onOpenBrowserUrl(item.second) 
+                        }.padding(8.dp)) {
+                            Box(Modifier.size(48.dp).clip(CircleShape).background(palette.primary.first().copy(alpha = 0.1f)), contentAlignment = Alignment.Center) {
+                                Text(item.first.take(1), color = palette.primary.first(), fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(item.first, style = MaterialTheme.typography.bodySmall, color = palette.onSurface)
+                        }
+                    }
+                }
+                
+                Spacer(Modifier.height(16.dp))
+                
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    filters.forEach { f ->
+                        val selected = filterMode == f
+                        Box(Modifier.clip(RoundedCornerShape(50)).background(if (selected) palette.primary.first() else palette.surface).clickable { filterMode = f }.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            Text(f, color = if (selected) Color.White else palette.onSurface, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+            
+            val filteredTasks = tasks.filter { 
+                when(filterMode) {
+                    "下载中" -> it.status == com.downloadsource.core.TaskStatus.Running
+                    "已完成" -> it.status == com.downloadsource.core.TaskStatus.Completed
+                    "失败" -> it.status == com.downloadsource.core.TaskStatus.Failed
+                    else -> true
+                }
+            }
+
+            if (filteredTasks.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("暂无任务呢 (￣▽￣)~*", color = palette.onSurfaceDim) }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 80.dp)) {
+                    items(filteredTasks, key = { it.id }) { task ->
+                        if (isSelectionMode) {
+                            Row(Modifier.fillMaxWidth().clickable {
+                                if (selectedTasks.contains(task.id)) selectedTasks.remove(task.id) else selectedTasks.add(task.id)
+                            }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = selectedTasks.contains(task.id), onCheckedChange = { 
+                                    if (it) selectedTasks.add(task.id) else selectedTasks.remove(task.id) 
+                                })
+                                DownloadCard(task = task, onPause = {}, onResume = {}, onDelete = {}, onOpen = {})
+                            }
+                        } else {
+                            DownloadCard(
+                                task = task, 
+                                onPause = { DownloadManager.pause(ctx, task.id) }, 
+                                onResume = { DownloadManager.start(ctx, task.id) }, 
+                                onDelete = { DownloadManager.remove(ctx, task.id) },
+                                onOpen = { }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!isSelectionMode) {
+            FloatingActionButton(
+                onClick = { showAddDialog = true; prefillUrl = "" },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+                containerColor = palette.primary.first(),
+                shape = CircleShape
+            ) { Text("+", style = MaterialTheme.typography.headlineMedium, color = Color.White) }
+        }
+    }
+
+    if (showAddDialog) {
+        AddTaskDialog(initialUrl = prefillUrl, onDismiss = { showAddDialog = false }) { url, name, threads, speed, headers ->
+            DownloadManager.add(ctx, url, name, threads, speed, headers, File(dirPath))
+            showAddDialog = false
+        }
+    }
+}
