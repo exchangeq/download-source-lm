@@ -1,5 +1,6 @@
 package com.downloadsource.ui
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -17,11 +18,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.*
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -139,7 +144,22 @@ fun GradientBackground(palette: GradientPalette, content: @Composable () -> Unit
                         .offset(x = (-130).dp * phase, y = 50.dp * phase)
                         .background(Brush.radialGradient(listOf(palette.accent.first().copy(alpha = glow * 0.75f), Color.Transparent)), CircleShape)
                 )
-                content()
+                // 三角函数入场：正弦抬升 + 余弦微旋，收尾同时归零，避免机械直线感
+                val enter = remember { Animatable(0f) }
+                LaunchedEffect(Unit) { enter.animateTo(1f, tween(950, easing = FastOutSlowInEasing)) }
+                val p = enter.value
+                val scale = 0.92f + 0.08f * sin(p * PI.toFloat() / 2f)
+                val dy = 34f * (1f - p) + 8f * sin(p * PI.toFloat())
+                val rot = 5f * cos(p * PI.toFloat() / 2f)
+                Box(
+                    Modifier.fillMaxSize().graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationY = dy
+                        rotationZ = rot
+                        alpha = 0.45f + 0.55f * p
+                    }
+                ) { content() }
             }
         }
     }

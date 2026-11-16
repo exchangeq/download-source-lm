@@ -6,7 +6,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import java.io.ByteArrayInputStream
 
 open class SafeWebViewClient(
     private val onDownloadRequest: (String) -> Unit = {},
@@ -15,13 +14,10 @@ open class SafeWebViewClient(
 
     private val blockedSchemes = setOf("baiduboxapp", "baiduboxlite")
     private val downloadExtensions = listOf(".mp4", ".mkv", ".mp3", ".m3u8", ".zip", ".rar", ".apk", ".pdf", ".exe", ".txt", ".md", ".json", ".xml", ".csv")
-    private val adHosts = setOf("doubleclick.net", "google-analytics.com", "googlesyndication.com", "cpro.baidu.com")
 
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-        val url = request.url.toString().lowercase()
-        if (adHosts.any { url.contains(it) }) {
-            return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
-        }
+        // 不再返回空 Body：统计脚本被截断会让整段 JS 抛错，很多站直接白屏。
+        // 拦截交给浏览器的“广告拦截”开关，按站点脚本方式处理，不做资源层改写。
         return super.shouldInterceptRequest(view, request)
     }
 

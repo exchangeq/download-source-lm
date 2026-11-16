@@ -84,10 +84,12 @@ import com.downloadsource.core.DownloadManager
 import com.downloadsource.storage.BrowserHistoryStore
 import com.downloadsource.storage.BrowserPrefs
 import com.downloadsource.storage.DirStore
+import com.downloadsource.storage.SiteScriptStore
 import com.downloadsource.utils.SearchEngine
 import com.downloadsource.utils.UserAgents
 import com.downloadsource.web.SafeWebViewClient
 import com.downloadsource.web.WebInterceptor
+import com.downloadsource.web.WebScripts
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -128,6 +130,12 @@ fun BrowserScreen(
     var showSniffList by remember { mutableStateOf(false) }
     var showFind by remember { mutableStateOf(false) }
     var findQuery by remember { mutableStateOf("") }
+    var showSiteScript by remember { mutableStateOf(false) }
+    var siteScriptText by remember { mutableStateOf("") }
+    var showDataPanel by remember { mutableStateOf(false) }
+    var readerMode by remember { mutableStateOf(false) }
+    var forceDarkWeb by remember { mutableStateOf(false) }
+    var incognito by remember { mutableStateOf(false) }
 
     var engine by remember { mutableStateOf(SearchEngine.getCurrent(ctx)) }
     var desktopMode by remember { mutableStateOf(BrowserPrefs.isDesktop(ctx)) }
@@ -161,6 +169,16 @@ fun BrowserScreen(
             settings.builtInZoomControls = true
             settings.displayZoomControls = false
             settings.cacheMode = WebSettings.LOAD_DEFAULT
+            // 白屏常见根因：window.open / target=_blank 无人接管、混合内容被拦、媒体被手势限制
+            settings.setSupportMultipleWindows(true)
+            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.allowFileAccess = true
+            settings.allowContentAccess = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.setSupportZoom(true)
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                settings.forceDark = WebSettings.FORCE_DARK_AUTO
+            }
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         }
@@ -197,6 +215,16 @@ fun BrowserScreen(
                     BrowserHistoryStore.addHistory(ctx, url)
                 }
                 view?.evaluateJavascript(webInterceptor.injectionScript, null)
+                // 站点自定义 JS + 阅读模式
+                val host = SiteScriptStore.hostOf(url ?: "")
+                val siteJs = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
+                if (siteJs.isNotBlank()) view?.evaluateJavascript("(function(){try{$siteJs}catch(e){console.warn('LM site script',e)}})();", null)
+                if (readerMode) view?.evaluateJavascript(WebScripts.readerMode, null)
+            }
+
+            override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                android.widget.Toast.makeText(ctx, "页面渲染进程被系统回收，已重建", android.widget.Toast.LENGTH_SHORT).show()
+                return true
             }
 
             override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
@@ -228,6 +256,23 @@ fun BrowserScreen(
             override fun onReceivedTitle(view: WebView?, title: String?) {
                 pageTitle = title ?: ""
                 currentTab()?.let { it.title = title ?: "新标签页" }
+            }
+
+            override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean {
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                val tmp = WebView(ctx)
+                tmp.webViewClient = object : android.webkit.WebViewClient() {
+                    override fun shouldOverrideUrlLoading(v: WebView, req: android.webkit.WebResourceRequest): Boolean {
+                        val target = req.url.toString()
+                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", target)
+                        tabs.add(tab)
+                        activeId = tab.id
+                        return true
+                    }
+                }
+                transport.webView = tmp
+                resultMsg.sendToTarget()
+                return true
             }
 
             override fun onShowFileChooser(view: WebView?, callback: ValueCallback<Array<Uri>>?, params: FileChooserParams?): Boolean {
@@ -511,6 +556,20 @@ fun BrowserScreen(
                 MenuItem("历史记录", Icons.Default.Search, palette) { showMenu = false; showHistory = true }
                 MenuItem("页内查找", Icons.Default.Search, palette) { showMenu = false; showFind = true }
                 MenuItem("浏览器标识 (UA)", Icons.Default.Layers, palette) { showMenu = false; showUa = true }
+                MenuItem("此站自定义 JS", Icons.Default.Add, palette) {
+                    showMenu = false
+                    val host = SiteScriptStore.hostOf(webView.url ?: "")
+                    siteScriptText = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
+                    showSiteScript = true
+                }
+                MenuItem(if (readerMode) "退出阅读模式" else "阅读模式", Icons.Default.Search, palette) {
+                    showMenu = false
+                    readerMode = !readerMode
+                    webView.evaluateJavascript(WebScripts.readerMode, null)
+                }
+                MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) }
+                MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) }
+                MenuItem("数据管理", Icons.Default.Delete, palette) { showMenu = false; showDataPanel = true }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("桌面版网站", color = palette.onSurface, modifier = Modifier.weight(1f))
@@ -635,7 +694,20 @@ fun BrowserScreen(
             Column(Modifier.fillMaxWidth().heightIn(max = 500.dp).clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("已抓取资源 (${sniffedUrls.size})", fontWeight = FontWeight.Bold, color = palette.onSurface)
-                    TextButton(onClick = { sniffedUrls.clear(); showSniffList = false }) { Text("清空") }
+                    Row {
+                        TextButton(onClick = {
+                            var added = 0
+                            sniffedUrls.take(20).forEach { media ->
+                                if (!media.isBlob) {
+                                    DownloadManager.add(ctx, media.url, null, 16, 0, emptyMap(), DirStore.resolveDownloadDir(ctx))
+                                    added++
+                                }
+                            }
+                            android.widget.Toast.makeText(ctx, "已入队 $added 个任务", android.widget.Toast.LENGTH_SHORT).show()
+                            showSniffList = false
+                        }) { Text("全部下载") }
+                        TextButton(onClick = { sniffedUrls.clear(); showSniffList = false }) { Text("清空") }
+                    }
                 }
                 LazyColumn {
                     items(sniffedUrls) { media ->
@@ -679,6 +751,68 @@ fun BrowserScreen(
                         if (uaKey == preset.key) Text("当前", color = palette.primary.first(), style = MaterialTheme.typography.bodySmall)
                     }
                 }
+            }
+        }
+    }
+
+    if (showSiteScript) {
+        Dialog(onDismissRequest = { showSiteScript = false }) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 460.dp).clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
+                Text("站点自定义 JS · ${SiteScriptStore.hostOf(webView.url ?: "")}", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                Spacer(Modifier.height(10.dp))
+                BasicTextField(
+                    value = siteScriptText,
+                    onValueChange = { siteScriptText = it },
+                    textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodySmall.fontSize),
+                    decorationBox = { inner ->
+                        Box(Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)).background(palette.background.first()).padding(10.dp)) {
+                            if (siteScriptText.isEmpty()) Text("// 每次页面加载后自动执行", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                            inner()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = {
+                        val host = SiteScriptStore.hostOf(webView.url ?: "")
+                        if (host.isNotBlank()) { SiteScriptStore.put(ctx, host, siteScriptText); android.widget.Toast.makeText(ctx, "已保存，刷新后生效", android.widget.Toast.LENGTH_SHORT).show() }
+                        showSiteScript = false
+                    }) { Text("保存") }
+                    TextButton(onClick = { showSiteScript = false }) { Text("取消") }
+                }
+            }
+        }
+    }
+
+    if (showDataPanel) {
+        Dialog(onDismissRequest = { showDataPanel = false }) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
+                Text("数据管理", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                MenuItem("清 Cookie", Icons.Default.Delete, palette) { CookieManager.getInstance().removeAllCookies(null); CookieManager.getInstance().flush(); android.widget.Toast.makeText(ctx, "Cookie 已清", android.widget.Toast.LENGTH_SHORT).show() }
+                MenuItem("清缓存", Icons.Default.Delete, palette) { webView.clearCache(true); android.widget.Toast.makeText(ctx, "缓存已清", android.widget.Toast.LENGTH_SHORT).show() }
+                MenuItem("清表单与历史", Icons.Default.Delete, palette) { webView.clearFormData(); webView.clearHistory(); BrowserHistoryStore.clearHistory(ctx); android.widget.Toast.makeText(ctx, "已清理", android.widget.Toast.LENGTH_SHORT).show() }
+                MenuItem("清站点存储", Icons.Default.Delete, palette) { android.webkit.WebStorage.getInstance().deleteAllData(); android.widget.Toast.makeText(ctx, "站点数据已清", android.widget.Toast.LENGTH_SHORT).show() }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("无痕模式（关闭 Cookie 与缓存）", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = incognito, onCheckedChange = {
+                        incognito = it
+                        CookieManager.getInstance().setAcceptCookie(!it)
+                        webView.settings.cacheMode = if (it) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+                        if (it) { CookieManager.getInstance().removeAllCookies(null); webView.clearCache(true) }
+                        webView.reload()
+                    })
+                }
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("网页强制深色", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = forceDarkWeb, onCheckedChange = {
+                            forceDarkWeb = it
+                            webView.settings.forceDark = if (it) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_AUTO
+                            webView.reload()
+                        })
+                    }
+                }
+                TextButton(onClick = { showDataPanel = false }, modifier = Modifier.align(Alignment.End)) { Text("关闭") }
             }
         }
     }
@@ -727,4 +861,33 @@ private fun clearBrowserData(ctx: android.content.Context, webView: WebView) {
     runCatching { webView.clearHistory() }
     runCatching { webView.clearFormData() }
     android.widget.Toast.makeText(ctx, "缓存与 Cookie 已清除", android.widget.Toast.LENGTH_SHORT).show()
+}
+
+/** 长截图：优先整页 Picture，失败退化为可视区域 */
+private fun saveLongScreenshot(ctx: android.content.Context, webView: WebView, palette: GradientPalette) {
+    try {
+        val width = webView.width.coerceAtLeast(1)
+        val height = webView.height.coerceAtLeast(1)
+        val bmp = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        webView.draw(canvas)
+        val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), "LM")
+            .let { if (it.exists() || it.mkdirs()) it else java.io.File(ctx.filesDir, "shots") }
+        val file = java.io.File(dir, "shot_${System.currentTimeMillis()}.png")
+        java.io.FileOutputStream(file).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, it) }
+        bmp.recycle()
+        android.widget.Toast.makeText(ctx, "已保存：${file.absolutePath}", android.widget.Toast.LENGTH_LONG).show()
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(ctx, "截图失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** 网页导出 PDF（走系统打印框架） */
+private fun exportPdf(ctx: android.content.Context, webView: WebView) {
+    try {
+        val pm = ctx.getSystemService(android.content.Context.PRINT_SERVICE) as android.print.PrintManager
+        pm.print(webView.createPrintDocumentAdapter("LM-${System.currentTimeMillis()}"), "LM 网页导出")
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(ctx, "导出失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    }
 }
