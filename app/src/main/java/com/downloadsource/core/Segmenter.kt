@@ -222,7 +222,7 @@ class Segmenter(private val client: OkHttpClient) {
     private suspend fun downloadM3u8(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long) -> Unit): File = coroutineScope {
         var finalUrl = url
         if (url.endsWith(".ts", true)) finalUrl = url.substringBeforeLast("/").plus("/index.m3u8")
-        val segments = parseM3u8(finalUrl, mutableSetOf())
+        val segments = parseM3u8(finalUrl, mutableSetOf(), headers)
         if (segments.isEmpty()) error("未找到有效的 TS 分片 (´･_･`)")
         
         val tmpDir = File(outFile.parentFile, ".${outFile.name}.ts_parts").apply { mkdirs() }
@@ -282,14 +282,14 @@ class Segmenter(private val client: OkHttpClient) {
         outFile
     }
 
-    private suspend fun parseM3u8(url: String, visited: MutableSet<String>): List<TsSegment> = withContext(Dispatchers.IO) {
+    private suspend fun parseM3u8(url: String, visited: MutableSet<String>, headers: okhttp3.Headers): List<TsSegment> = withContext(Dispatchers.IO) {
         if (visited.contains(url)) return@withContext emptyList()
         visited.add(url)
-        val text = client.newCall(Request.Builder().url(url).build()).execute().use { it.body?.string() ?: "" }
+        val text = client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
         val lines = text.lines()
         if (lines.any { it.startsWith("#EXT-X-STREAM-INF") }) {
             val subUrl = lines.firstOrNull { it.isNotBlank() && !it.startsWith("#") }
-            if (subUrl != null) return@withContext parseM3u8(resolveUrl(url, subUrl), visited)
+            if (subUrl != null) return@withContext parseM3u8(resolveUrl(url, subUrl), visited, headers)
         }
         var currentKey: ByteArray? = null; var currentIv: ByteArray? = null; var mediaSequence = 0L; var segmentIndex = 0L
         val result = mutableListOf<TsSegment>()
@@ -303,14 +303,14 @@ class Segmenter(private val client: OkHttpClient) {
                     val keyUri = Regex("URI=\"(.*?)\"").find(trimmed)?.groupValues?.get(1)
                     val ivStr = Regex("IV=0x(.*?)(,|$)").find(trimmed)?.groupValues?.get(1)
                     if (keyUri != null) {
-                        currentKey = client.newCall(Request.Builder().url(resolveUrl(url, keyUri)).build()).execute().use { it.body?.bytes() }
+                        currentKey = client.newCall(Request.Builder().url(resolveUrl(url, keyUri)).headers(headers).build()).execute().use { it.body?.bytes() }
                         currentIv = if (ivStr != null) hexStringToByteArray(ivStr) else null
                     } else { currentKey = null; currentIv = null }
                 } else if (method == "NONE") { currentKey = null; currentIv = null }
             } else if (trimmed.isNotBlank() && !trimmed.startsWith("#")) {
                 val absUrl = resolveUrl(url, trimmed)
                 if (absUrl.contains(".m3u8", ignoreCase = true)) {
-                    result.addAll(parseM3u8(absUrl, visited))
+                    result.addAll(parseM3u8(absUrl, visited, headers))
                 } else {
                     val ivToUse = currentIv ?: if (currentKey != null) {
                         val seq = mediaSequence + segmentIndex
