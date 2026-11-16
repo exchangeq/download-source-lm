@@ -54,7 +54,7 @@ object DownloadManager {
     fun add(context: Context, url: String, customName: String?, threads: Int, speedLimitKb: Long, headers: Map<String, String>, baseDir: File) {
         val tempName = customName?.let { sanitizeFileName(it) } ?: "parsing_${System.currentTimeMillis()}"
         // 补默认 UA / Accept：不少站点对裸客户端限速或直接 403
-        val finalHeaders = buildMap {
+        val finalHeaders = buildMap<String, String> {
             putAll(headers)
             if (keys.none { it.equals("User-Agent", true) }) put("User-Agent", UserAgents.DEFAULT)
             if (keys.none { it.equals("Accept", true) }) put("Accept", "*/*")
