@@ -886,7 +886,7 @@ private fun saveLongScreenshot(ctx: android.content.Context, webView: WebView, p
 private fun exportPdf(ctx: android.content.Context, webView: WebView) {
     try {
         val pm = ctx.getSystemService(android.content.Context.PRINT_SERVICE) as android.print.PrintManager
-        pm.print(webView.createPrintDocumentAdapter("LM-${System.currentTimeMillis()}"), "LM 网页导出")
+        pm.print("LM 网页导出 ${System.currentTimeMillis()}", webView.createPrintDocumentAdapter("LM"))
     } catch (e: Exception) {
         android.widget.Toast.makeText(ctx, "导出失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
     }
