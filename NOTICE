@@ -1,0 +1,13 @@
+LM Downloader (download-source-lm)
+Copyright (C) 2026 exchangeq / LM
+
+This product is a derivative work of "Download source"
+(https://github.com/Maxx-EX/download-source), originally authored by Maxx-EX
+and licensed under the Apache License, Version 2.0.
+
+The derivative was produced with the author's authorization and retains all
+functionality of the upstream project, with modifications documented in
+CHANGELOG.md (rebranding, package rename, download engine fixes, browser fixes,
+theme additions, removal of the donation QR entry, build pipeline rework).
+
+Upstream project: Download source, Copyright (C) Maxx-EX, Apache-2.0.

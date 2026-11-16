@@ -1,49 +1,73 @@
-# LM-Chat CI: build debug APK with NDK/C++ and upload as artifact.
-# ubuntu-latest runner 已自带 Android SDK（platform-34 / build-tools 34 / NDK 26 / CMake 3.22）
-# 且 licenses 已 accept，无需任何 setup-android action。
-name: build-apk
+name: build
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  ANDROID_HOME: /usr/local/lib/android/sdk
-  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Show Android SDK
+      - name: Install SDK components
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls "$ANDROID_HOME"
-          echo "--- platforms ---"; ls "$ANDROID_HOME/platforms"
-          echo "--- ndk ---"; ls "$ANDROID_HOME/ndk"
-          echo "--- cmake ---"; ls "$ANDROID_HOME/cmake"
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
+          echo "using $SDKM"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125" || {
+            echo "retry with --sdk_root"; "$SDKM" --sdk_root="$ANDROID_HOME" "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125"; }
+          ls "$ANDROID_HOME/ndk" "$ANDROID_HOME/cmake" 2>/dev/null || true
 
-      - name: Install Gradle 8.9
-        run: |
-          wget -q https://services.gradle.org/distributions/gradle-8.9-bin.zip
-          unzip -q gradle-8.9-bin.zip
-          echo "$PWD/gradle-8.9/bin" >> "$GITHUB_PATH"
-
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          name: LM-Chat-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          gradle-version: '8.7'
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "missing KEYSTORE_BASE64"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/lm-release.jks"
+          ls -l "$GITHUB_WORKSPACE/lm-release.jks"
+
+      - name: Build signed release
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/lm-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          VERSION_NAME: '7.0.3'
+        run: gradle :app:assembleOmegaRelease --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find app/build/outputs/apk -name '*.apk' -exec cp {} out/ \;
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lm-downloader-apk
+          path: out/*.apk
+
+      - name: Publish release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v7.0.3-lm
+          name: LM Downloader v7.0.3
+          body_path: CHANGELOG.md
+          files: out/*.apk

@@ -12,7 +12,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 object UpdateManager {
-    private const val REPO = "Maxx-EX/download-source"
+    private const val REPO = "exchangeq/download-source-lm"
     private val client = OkHttpClient()
 
     data class ReleaseInfo(val version: String, val downloadUrl: String, val changelog: String, val isZeta: Boolean)
@@ -20,7 +20,7 @@ object UpdateManager {
     suspend fun checkUpdate(rawCurrentVersion: String): ReleaseInfo? = withContext(Dispatchers.IO) {
         try {
             val currentVersion = rawCurrentVersion.substringBefore("-").trim()
-            val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases?per_page=100").header("User-Agent", "DownloadSource").build()
+            val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases?per_page=100").header("User-Agent", "LM-Downloader").build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
                 val jsonArray = JsonParser.parseString(resp.body?.string()).asJsonArray

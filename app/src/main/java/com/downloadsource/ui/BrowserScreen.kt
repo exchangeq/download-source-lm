@@ -130,16 +130,14 @@ fun BrowserScreen(
                         textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodyMedium.fontSize),
                         cursorBrush = SolidColor(palette.primary.first()), singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(onGo = { 
-                            val q = urlInput.trim()
-                            if (q.isNotEmpty()) {
-                                // 修复：智能分流
-                                val target = if (q.startsWith("http") || q.contains(".com") || q.contains(".cn")) {
-                                    if (q.startsWith("http")) q else "https://$q"
-                                } else {
-                                    val engine = SearchEngine.getCurrent(ctx)
-                                    engine.baseUrl + URLEncoder.encode(q, "UTF-8")
-                                }
+                        keyboardActions = KeyboardActions(onGo = {
+                            val target = SearchEngine.normalize(ctx, urlInput)
+                            if (target.isNotBlank()) {
+                                urlInput = target
+                                (ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                                    as android.view.inputmethod.InputMethodManager)
+                                    .hideSoftInputFromWindow(webView.windowToken, 0)
+                                webView.requestFocus()
                                 webView.loadUrl(target)
                             }
                         }),
@@ -160,7 +158,7 @@ fun BrowserScreen(
             ) {
                 IconButton(onClick = { webView.goBack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "后退", tint = palette.onSurface) }
                 IconButton(onClick = { webView.goForward() }) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "前进", tint = palette.onSurface) }
-                IconButton(onClick = { webView.loadUrl("https://www.bing.com") }) { Icon(Icons.Default.Home, "主页", tint = palette.onSurface) }
+                IconButton(onClick = { webView.loadUrl(SearchEngine.getCurrent(ctx).homeUrl) }) { Icon(Icons.Default.Home, "主页", tint = palette.onSurface) }
                 IconButton(onClick = { webView.reload() }) { Icon(Icons.Default.Refresh, "刷新", tint = palette.onSurface) }
             }
         }

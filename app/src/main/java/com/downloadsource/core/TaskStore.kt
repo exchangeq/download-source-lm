@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 
 object TaskStore {
     private val gson = Gson()
+    // 独立作用域替代 GlobalScope，落库不再泄漏到全局
+    private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
     suspend fun loadAsync(context: Context): List<DownloadTask> = withContext(Dispatchers.IO) {
         val dao = AppDatabase.getDatabase(context).taskDao()
@@ -40,7 +42,7 @@ object TaskStore {
             )
         }
         // 修复：使用 insert 的 REPLACE 策略，不再全表删除！
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        ioScope.launch {
             dao.insertTasks(entities)
         }
     }

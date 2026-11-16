@@ -79,7 +79,6 @@ fun SettingsScreen(onClose: () -> Unit) {
     var showPoem by remember { mutableStateOf(false) }
     var poemText by remember { mutableStateOf("") }
     var showAria2Dialog by remember { mutableStateOf(false) }
-    var showDonate by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         // 顶栏与彩蛋触发点
@@ -217,7 +216,6 @@ fun SettingsScreen(onClose: () -> Unit) {
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = palette.onSurfaceDim)
                 }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
-                SettingsRow("赞赏码", "请我喝杯咖啡 ☕", Icons.Default.Favorite) { showDonate = true }
             }
             
             Spacer(Modifier.height(24.dp))
@@ -259,17 +257,6 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 
-    if (showDonate) {
-        Dialog(onDismissRequest = { showDonate = false }) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(palette.surface).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("感谢赞助 (๑•̀ㅂ•́)و✧", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = palette.onSurface)
-                Spacer(Modifier.height(16.dp))
-                Image(painter = painterResource(id = R.drawable.donate_qr), contentDescription = "QR", contentScale = ContentScale.Fit, modifier = Modifier.size(260.dp).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(8.dp))
-                Spacer(Modifier.height(16.dp))
-                Button(onClick = { showDonate = false }, modifier = Modifier.fillMaxWidth()) { Text("关闭") }
-            }
-        }
-    }
 }
 
 @Composable fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) { 
