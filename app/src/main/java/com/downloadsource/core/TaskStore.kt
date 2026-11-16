@@ -48,11 +48,10 @@ object TaskStore {
         
         ioScope.launch {
             dbMutex.withLock {
-                androidx.room.withTransaction(AppDatabase.getDatabase(context)) {
-                    dao.clearAll()
-                    if (entities.isNotEmpty()) {
-                        dao.insertTasks(entities)
-                    }
+                // 串行化写入：先清空再插入，避免多任务同时落库出现半截列表
+                dao.clearAll()
+                if (entities.isNotEmpty()) {
+                    dao.insertTasks(entities)
                 }
             }
         }
