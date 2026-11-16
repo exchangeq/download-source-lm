@@ -47,13 +47,15 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          VERSION_NAME: '7.0.4'
-        run: gradle :app:assembleOmegaRelease --no-daemon --stacktrace
+          VERSION_NAME: '7.1.0'
+        run: gradle :app:assembleOmegaRelease :app:assembleZetaRelease --no-daemon --stacktrace
 
       - name: Collect APK
         run: |
           mkdir -p out
           find app/build/outputs/apk -name '*.apk' -exec cp {} out/ \;
+          if [ -f out/app-omega-release.apk ]; then cp out/app-omega-release.apk "out/LM-Ultra-Fast-Downloader-7.1.0.apk"; fi
+          if [ -f out/app-zeta-release.apk ]; then cp out/app-zeta-release.apk "out/LM-Ultra-Fast-Downloader-7.1.0-Beta.apk"; fi
           ls -l out
 
       - uses: actions/upload-artifact@v4
@@ -64,7 +66,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v7.0.4-lm
-          name: LM Downloader v7.0.4
+          tag_name: v7.1.0-lm
+          name: LM Ultra Fast Downloader v7.1.0
           body_path: CHANGELOG.md
           files: out/*.apk

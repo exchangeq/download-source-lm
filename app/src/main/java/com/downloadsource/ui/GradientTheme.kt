@@ -1,9 +1,19 @@
 package com.downloadsource.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.*
@@ -94,7 +104,41 @@ val SafeTypography = Typography(
 fun GradientBackground(palette: GradientPalette, content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalPalette provides palette) {
         MaterialTheme(typography = SafeTypography) {
-            Box(Modifier.fillMaxSize().background(Brush.linearGradient(palette.background, Offset.Zero, Offset.Infinite))) { content() }
+            val transition = rememberInfiniteTransition(label = "aurora")
+            val phase by transition.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(12000, easing = LinearEasing), RepeatMode.Reverse),
+                label = "phase"
+            )
+            val glow by transition.animateFloat(
+                initialValue = 0.18f,
+                targetValue = 0.42f,
+                animationSpec = infiniteRepeatable(tween(4800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                label = "glow"
+            )
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.linearGradient(
+                        colors = palette.background,
+                        start = Offset(0f, -900f * phase),
+                        end = Offset(1000f * phase + 100f, 1900f)
+                    )
+                )
+            ) {
+                // 缓慢流动的极光光斑，给液态玻璃背景一点活气
+                Box(
+                    Modifier.align(Alignment.TopEnd).size(320.dp)
+                        .offset(x = 90.dp * phase, y = (-70).dp * phase)
+                        .background(Brush.radialGradient(listOf(palette.primary.first().copy(alpha = glow), Color.Transparent)), CircleShape)
+                )
+                Box(
+                    Modifier.align(Alignment.BottomStart).size(380.dp)
+                        .offset(x = (-130).dp * phase, y = 50.dp * phase)
+                        .background(Brush.radialGradient(listOf(palette.accent.first().copy(alpha = glow * 0.75f), Color.Transparent)), CircleShape)
+                )
+                content()
+            }
         }
     }
 }

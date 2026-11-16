@@ -52,7 +52,9 @@ class Segmenter(private val client: OkHttpClient) {
             return@coroutineScope streamDownload(taskId, url, outFile, headers, onTick)
         }
         
-        val n = if (supportsRange && total > 2L shl 20) parts.coerceIn(1, 16) else 1
+        // 32 路并发抓取；按 1MB/片下限收敛，避免碎成几万个小块
+        val maxBySize = (total / (1L shl 20)).toInt().coerceAtLeast(1)
+        val n = if (supportsRange && total > 2L shl 20) parts.coerceIn(1, 32).coerceAtMost(maxBySize) else 1
         val downloaded = AtomicLong(0)
         val rateLimiter = GlobalRateLimiter(if (speedLimitKb > 0) speedLimitKb * 1024 else 0)
 

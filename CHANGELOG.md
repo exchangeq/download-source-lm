@@ -44,3 +44,40 @@
 - 移除赞赏码入口与资源
 - 包名 com.lm.downloader（内测通道 .beta），关闭 R8
 - GitHub Actions 用仓库密钥签名并自动发布 Release，新增 LICENSE 与 NOTICE
+
+## v7.1.0-lm
+
+### 下载加速（外网 ZIP 场景重点优化）
+
+- 分片并发上限 16 → 32，按 1MB/片下限自动收敛，避免碎块反而拖慢
+- 连接池扩到 48 条、每主机 64 路、调度器 128 并发，长肥管道更稳
+- 并发开始时同时竞速 24 个镜像，先到先得，4 秒内无可用节点直接回退直连
+- 自动补 `User-Agent` / `Accept` / `Referer`：大量站点对裸客户端降速甚至 403
+- 文件名按 `Content-Disposition`、RFC 5987 `filename*`、路径、`Content-Type` 四级兜底，zip/apk/rar/7z/pdf/音视频全格式正确落盘
+
+### 镜像池扩容
+
+- 候选节点扩到 100 个，设置页可一键测活，死链自动拉黑 10 分钟
+- 命中节点缓存 30 分钟，避免每次下载重复探测
+
+### 资源嗅探
+
+- 五路并进：fetch、XHR、播放器元素、页面文本正则、resource timing
+- 覆盖 mp4 / m3u8 / mp3 / m4a / mkv / webm / flv / mov / ts / zip / rar / 7z / apk / pdf
+- Blob 动态流自动取回 Base64（上限 120MB），列表内可单条复制链接
+
+### 浏览器
+
+- UA 池：Chrome 安卓 / Safari iPhone / Chrome Windows / Edge / Firefox，一键切换并持久化
+- 资源嗅探列表支持复制链接、直接转下载
+
+### UI
+
+- 背景升级为流动极光：渐变位移 + 双光斑呼吸动画
+- 保留原有全部交互与主题，未删减任何功能
+
+### 更新与发行
+
+- 更新器自识别通道：Beta 包只吃 Beta 资产，正式包只吃正式资产，避免互刷
+- CI 同时构建正式包与 Beta 包，产物改名后一起发布
+- 应用名改为 5 词英文：正式 `LM Ultra Fast Downloader Pro`，内测 `LM Ultra Fast Downloader Beta`

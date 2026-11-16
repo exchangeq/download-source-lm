@@ -9,7 +9,8 @@
 
 ## 功能
 
-- 多线程分片直写、三重长度探测、流式兜底，支持暂停续传
+- 32 路并发分片直写、三重长度探测、流式兜底，支持暂停续传
+- 100 节点镜像池 + 24 路竞速，自动补 UA/Referer，全格式落盘
 - 队列调度：并发位空出即补位，不会出现排队卡死
 - Zero-core（NDK）原生合并，Java 降级兜底
 - 内置浏览器：多标签、书签、历史、页内查找、桌面 UA、文字缩放、资源嗅探
@@ -20,8 +21,8 @@
 
 ## 安装包
 
-- 正式通道：`com.lm.downloader`，应用名「LM 下载器」
-- 内测通道：`com.lm.downloader.beta`，应用名「LM 下载器 Beta」
+- 正式通道：`com.lm.downloader`，应用名 LM Ultra Fast Downloader Pro
+- 内测通道：`com.lm.downloader.beta`，应用名 LM Ultra Fast Downloader Beta
 
 APK 由 GitHub Actions 使用仓库密钥签名，Releases 页面直接下载。
 

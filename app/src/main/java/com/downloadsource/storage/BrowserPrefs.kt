@@ -21,4 +21,7 @@ object BrowserPrefs {
     // 文字缩放
     fun getZoom(ctx: Context): Int = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getInt("text_zoom", 100)
     fun setZoom(ctx: Context, value: Int) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putInt("text_zoom", value).apply() }
+
+    fun getUaKey(ctx: Context): String = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString("ua_key", "android") ?: "android"
+    fun setUaKey(ctx: Context, key: String) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString("ua_key", key).apply() }
 }

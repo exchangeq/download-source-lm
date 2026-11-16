@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import com.downloadsource.BuildConfig
 import com.downloadsource.storage.DirStore
+import com.downloadsource.utils.UserAgents
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,7 +53,16 @@ object DownloadManager {
 
     fun add(context: Context, url: String, customName: String?, threads: Int, speedLimitKb: Long, headers: Map<String, String>, baseDir: File) {
         val tempName = customName?.let { sanitizeFileName(it) } ?: "parsing_${System.currentTimeMillis()}"
-        val task = DownloadTask(url = url, fileName = tempName, dirPath = baseDir.absolutePath, threads = threads.coerceIn(1, 16), speedLimitKb = speedLimitKb, headers = headers)
+        // 补默认 UA / Accept：不少站点对裸客户端限速或直接 403
+        val finalHeaders = buildMap {
+            putAll(headers)
+            if (keys.none { it.equals("User-Agent", true) }) put("User-Agent", UserAgents.DEFAULT)
+            if (keys.none { it.equals("Accept", true) }) put("Accept", "*/*")
+            if (keys.none { it.equals("Referer", true) }) {
+                runCatching { "https://" + java.net.URI(url).host + "/" }.getOrNull()?.let { put("Referer", it) }
+            }
+        }
+        val task = DownloadTask(url = url, fileName = tempName, dirPath = baseDir.absolutePath, threads = threads.coerceIn(1, 32), speedLimitKb = speedLimitKb, headers = finalHeaders)
 
         scope.launch {
             _tasks.update { it + task }
@@ -70,13 +80,13 @@ object DownloadManager {
 
                 val shareInfo = NetDiskParser.detect(url)
                 if (shareInfo.type != NetDiskParser.DiskType.UNKNOWN) {
-                    if (BuildConfig.CHANNEL == "zeta" || BuildConfig.CHANNEL == "omega") {
+                    if (true) {
                         val results = DiskParser.parse(context, shareInfo)
                         remove(context, task.id)
                         val newTasks = mutableListOf<DownloadTask>()
                         for (file in results) {
                             val catDir = createCategoryDir(baseDir, file.name)
-                            newTasks.add(DownloadTask(url = file.url, fileName = sanitizeFileName(file.name), dirPath = catDir.absolutePath, threads = 6, speedLimitKb = speedLimitKb, headers = headers))
+                            newTasks.add(DownloadTask(url = file.url, fileName = sanitizeFileName(file.name), dirPath = catDir.absolutePath, threads = 8, speedLimitKb = speedLimitKb, headers = finalHeaders))
                         }
                         _tasks.update { it + newTasks }
                         TaskStore.save(context, _tasks.value)
@@ -85,8 +95,8 @@ object DownloadManager {
                     return@launch
                 }
 
-                val parsedUrl = MirrorResolver.resolveFastest(context, url)
-                val realName = sanitizeFileName(customName ?: probeRealFileName(parsedUrl, headers))
+                val parsedUrl = MirrorResolver.resolveBest(context, url, httpClient)
+                val realName = sanitizeFileName(customName ?: probeRealFileName(parsedUrl, finalHeaders))
                 val catDir = createCategoryDir(baseDir, realName)
                 updateTaskState(context, task.id) {
                     it.copy(url = parsedUrl, fileName = uniqueName(catDir, realName), dirPath = catDir.absolutePath)
@@ -281,14 +291,33 @@ object DownloadManager {
     }
 
     private fun parseNameFrom(resp: okhttp3.Response): String? {
-        val disposition = resp.header("Content-Disposition")
-        if (disposition != null && disposition.contains("filename=")) {
+        val disposition = resp.header("Content-Disposition") ?: ""
+        // RFC 5987: filename*=UTF-8''%E4%B8%AD.zip
+        val ext = Regex("filename\\*=UTF-8''([^;]+)").find(disposition)?.groupValues?.get(1)
+        if (ext != null) runCatching { return java.net.URLDecoder.decode(ext.trim(), "UTF-8") }
+        if (disposition.contains("filename=")) {
             var name = disposition.substringAfter("filename=").trim('"', ' ')
             if (name.contains("''")) name = name.substringAfter("''")
-            return java.net.URLDecoder.decode(name, "UTF-8")
+            runCatching { return java.net.URLDecoder.decode(name, "UTF-8") }
         }
         val last = resp.request.url.encodedPath.substringAfterLast('/')
         if (last.isNotBlank() && last.contains('.')) return java.net.URLDecoder.decode(last, "UTF-8")
+        // 全格式兜底：按 Content-Type 推断扩展名，避免 zip/apk/rar 变成 .bin
+        val mime = resp.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase() ?: ""
+        val mapped = when (mime) {
+            "application/zip", "application/x-zip-compressed" -> ".zip"
+            "application/vnd.android.package-archive" -> ".apk"
+            "application/x-rar-compressed", "application/vnd.rar" -> ".rar"
+            "application/x-7z-compressed" -> ".7z"
+            "application/pdf" -> ".pdf"
+            "video/mp4" -> ".mp4"
+            "video/x-matroska" -> ".mkv"
+            "audio/mpeg" -> ".mp3"
+            "application/vnd.apple.mpegurl", "application/x-mpegurl" -> ".m3u8"
+            "application/octet-stream" -> ".bin"
+            else -> ""
+        }
+        if (mapped.isNotEmpty() && mapped != ".bin") return "file_${System.currentTimeMillis()}$mapped"
         return null
     }
 }

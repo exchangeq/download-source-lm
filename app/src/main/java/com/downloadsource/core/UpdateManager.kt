@@ -24,8 +24,9 @@ object UpdateManager {
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
                 val jsonArray = JsonParser.parseString(resp.body?.string()).asJsonArray
-                val isZeta = BuildConfig.CHANNEL == "zeta"
-                val targetName = if (isZeta) "Zeta" else "Omega"
+                // 自识别通道：beta 包（applicationId 以 .beta 结尾）只吃 beta 资产，正式包只吃正式资产
+                val isBeta = BuildConfig.APPLICATION_ID.endsWith(".beta") || BuildConfig.CHANNEL == "zeta"
+                val targetName = if (isBeta) "beta" else "omega"
                 var best: ReleaseInfo? = null
                 var maxVer = currentVersion
 
@@ -37,13 +38,18 @@ object UpdateManager {
                     val rawTag = tag.removePrefix("v").substringBefore("-").substringBefore("+").trim()
                     // 优先命中通道名，退化为任意 APK（本项目产物名为 app-omega-release.apk）
                     val assets = json.getAsJsonArray("assets")?.map { it.asJsonObject } ?: emptyList()
-                    val apkUrl = (assets.firstOrNull { it.get("name")?.asString?.contains(targetName, true) == true && it.get("name")?.asString?.endsWith(".apk") == true }
-                        ?: assets.firstOrNull { it.get("name")?.asString?.endsWith(".apk") == true })
+                    val apks = assets.filter { it.get("name")?.asString?.endsWith(".apk") == true }
+                    val sameChannel = apks.filter {
+                        val n = it.get("name")?.asString?.lowercase() ?: ""
+                        if (isBeta) n.contains("beta") else !n.contains("beta")
+                    }
+                    val apkUrl = (sameChannel.firstOrNull()
+                        ?: apks.firstOrNull())
                         ?.get("browser_download_url")?.asString
 
                     if (!apkUrl.isNullOrBlank() && isNewer(rawTag, maxVer)) {
                         maxVer = rawTag
-                        best = ReleaseInfo(rawTag, apkUrl, body, isZeta)
+                        best = ReleaseInfo(rawTag, apkUrl, body, isBeta)
                     }
                 }
                 return@withContext best
@@ -66,9 +72,9 @@ object UpdateManager {
     fun showUpdateDialog(ctx: Context, info: ReleaseInfo) {
         if (ThemeStore.getIgnoreVersion(ctx) == info.version) return
         AlertDialog.Builder(ctx)
-            .setTitle("发现新版本 v${info.version} 🎉")
+            .setTitle("发现新版本 v${info.version}")
             .setMessage(info.changelog)
-            .setPositiveButton("立即更新") { _, _ -> DownloadManager.add(ctx, info.downloadUrl, "Update_${info.version}.apk", 8, 0, emptyMap(), DirStore.resolveDownloadDir(ctx)) }
+            .setPositiveButton("立即更新") { _, _ -> DownloadManager.add(ctx, info.downloadUrl, "Update_${info.version}.apk", 16, 0, emptyMap(), DirStore.resolveDownloadDir(ctx)) }
             .setNeutralButton("忽略此版本") { _, _ -> ThemeStore.setIgnoreVersion(ctx, info.version) }
             .setNegativeButton("稍后", null).show()
     }

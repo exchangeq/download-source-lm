@@ -11,7 +11,7 @@ plugins {
 val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
 val localVersionCode = (System.currentTimeMillis() / 60000).toInt()
 val injectedVersionCode = ciRunNumber ?: localVersionCode
-val injectedVersionName = System.getenv("VERSION_NAME") ?: "7.0.4"
+val injectedVersionName = System.getenv("VERSION_NAME") ?: "7.1.0"
 val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
 
 android {
@@ -36,12 +36,12 @@ android {
             dimension = "channel"
             applicationIdSuffix = ".beta"
             versionNameSuffix = "-beta"
-            resValue("string", "app_name", "LM 下载器 Beta")
+            resValue("string", "app_name", "LM Ultra Fast Downloader Beta")
             buildConfigField("String", "CHANNEL", "\"zeta\"")
         }
         create("omega") {
             dimension = "channel"
-            resValue("string", "app_name", "LM 下载器")
+            resValue("string", "app_name", "LM Ultra Fast Downloader Pro")
             buildConfigField("String", "CHANNEL", "\"omega\"")
         }
     }

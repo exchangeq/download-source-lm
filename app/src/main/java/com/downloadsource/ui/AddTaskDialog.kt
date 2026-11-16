@@ -31,7 +31,7 @@ fun AddTaskDialog(
     val ctx = LocalContext.current
     var url by remember { mutableStateOf(if (initialUrl.isNotBlank()) initialUrl else getClipboardUrl(ctx) ?: "") }
     var name by remember { mutableStateOf(initialName) }
-    var threads by remember { mutableFloatStateOf(8f) }
+    var threads by remember { mutableFloatStateOf(16f) }
     // 限速拉满到 10MB/s = 10240 KB/s
     var speedLimit by remember { mutableFloatStateOf(0f) }
     var referer by remember { mutableStateOf("") }
@@ -56,7 +56,7 @@ fun AddTaskDialog(
                     Text("线程数", color = palette.onSurface, style = MaterialTheme.typography.bodyMedium)
                     Text("${threads.toInt()}", color = palette.primary.first(), fontWeight = FontWeight.Bold)
                 }
-                Slider(value = threads, onValueChange = { threads = it }, valueRange = 1f..16f, steps = 15)
+                Slider(value = threads, onValueChange = { threads = it }, valueRange = 1f..32f, steps = 31)
             }
             
             Column {

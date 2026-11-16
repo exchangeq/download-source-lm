@@ -85,6 +85,7 @@ import com.downloadsource.storage.BrowserHistoryStore
 import com.downloadsource.storage.BrowserPrefs
 import com.downloadsource.storage.DirStore
 import com.downloadsource.utils.SearchEngine
+import com.downloadsource.utils.UserAgents
 import com.downloadsource.web.SafeWebViewClient
 import com.downloadsource.web.WebInterceptor
 import java.io.File
@@ -131,6 +132,8 @@ fun BrowserScreen(
     var engine by remember { mutableStateOf(SearchEngine.getCurrent(ctx)) }
     var desktopMode by remember { mutableStateOf(BrowserPrefs.isDesktop(ctx)) }
     var zoom by remember { mutableStateOf(BrowserPrefs.getZoom(ctx)) }
+    var uaKey by remember { mutableStateOf(BrowserPrefs.getUaKey(ctx)) }
+    var showUa by remember { mutableStateOf(false) }
     var customView by remember { mutableStateOf<View?>(null) }
     var customCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var fileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
@@ -152,7 +155,7 @@ fun BrowserScreen(
             settings.databaseEnabled = true
             settings.loadsImagesAutomatically = true
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else MOBILE_UA
+            settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx))
             settings.textZoom = BrowserPrefs.getZoom(ctx)
             settings.setSupportZoom(true)
             settings.builtInZoomControls = true
@@ -207,7 +210,7 @@ fun BrowserScreen(
             override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
                 val url = request.url.toString()
                 val ext = url.substringAfterLast('.', "").lowercase().substringBefore('?')
-                if (ext in listOf("mp4", "mp3", "m3u8", "apk", "zip", "ts", "mkv") && !url.contains("favicon")) {
+                if (ext in listOf("mp4", "mp3", "m4a", "aac", "flac", "wav", "m3u8", "webm", "flv", "mov", "mkv", "ts", "apk", "zip", "rar", "7z", "pdf") && !url.contains("favicon")) {
                     if (sniffedUrls.none { it.url == url } && sniffedUrls.size < 100) {
                         sniffedUrls.add(WebInterceptor.SniffedMedia(url, null, false))
                     }
@@ -507,6 +510,7 @@ fun BrowserScreen(
                 MenuItem("书签", Icons.Default.Star, palette) { showMenu = false; showBookmarks = true }
                 MenuItem("历史记录", Icons.Default.Search, palette) { showMenu = false; showHistory = true }
                 MenuItem("页内查找", Icons.Default.Search, palette) { showMenu = false; showFind = true }
+                MenuItem("浏览器标识 (UA)", Icons.Default.Layers, palette) { showMenu = false; showUa = true }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("桌面版网站", color = palette.onSurface, modifier = Modifier.weight(1f))
@@ -640,8 +644,39 @@ fun BrowserScreen(
                         }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Layers, null, tint = palette.primary.first())
                             Spacer(Modifier.width(12.dp))
-                            Text(if (media.isBlob) "加密/动态流 (Blob)" else media.url, maxLines = 1, overflow = TextOverflow.Ellipsis, color = palette.onSurface)
+                            Text(if (media.isBlob) "加密/动态流 (Blob)" else media.url, maxLines = 1, overflow = TextOverflow.Ellipsis, color = palette.onSurface, modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("url", media.url))
+                                android.widget.Toast.makeText(ctx, "已复制链接", android.widget.Toast.LENGTH_SHORT).show()
+                            }) { Text("复制") }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showUa) {
+        Dialog(onDismissRequest = { showUa = false }) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
+                Text("浏览器标识", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                Spacer(Modifier.height(8.dp))
+                UserAgents.PRESETS.forEach { preset ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                            uaKey = preset.key
+                            BrowserPrefs.setUaKey(ctx, preset.key)
+                            BrowserPrefs.setDesktop(ctx, false)
+                            desktopMode = false
+                            webView.settings.userAgentString = preset.ua
+                            webView.reload()
+                            showUa = false
+                        }.padding(vertical = 12.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(preset.label, color = if (uaKey == preset.key) palette.primary.first() else palette.onSurface, modifier = Modifier.weight(1f))
+                        if (uaKey == preset.key) Text("当前", color = palette.primary.first(), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }

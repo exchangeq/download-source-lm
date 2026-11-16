@@ -25,48 +25,81 @@ class WebInterceptor {
         _sniffedData.tryEmit(SniffedMedia(url, mime, true))
     }
 
-    // 注入的终极极限嗅探脚本
+    // 极限嗅探：fetch / XHR / 播放器 / 页面文本 / resource timing 五路并进
     val injectionScript = """
         (function() {
-            // 1. 劫持 fetch
-            var originalFetch = window.fetch;
-            window.fetch = function() {
-                var url = arguments[0];
-                if (typeof url === 'string' && (url.includes('.mp4') || url.includes('.m3u8') || url.includes('.mp3') || url.includes('stream'))) {
-                    window.AndroidBridge.onMediaFound(url, null);
-                }
-                return originalFetch.apply(this, arguments);
+            if (window.__lmSniffInstalled) return;
+            window.__lmSniffInstalled = true;
+            var EXT = /(\.mp4|\.m3u8|\.mp3|\.m4a|\.aac|\.flac|\.wav|\.mkv|\.webm|\.flv|\.mov|\.ts|\.zip|\.rar|\.7z|\.apk|\.pdf)(\?|#|$)/i;
+            var seen = {};
+            function report(u, mime) {
+                if (!u || typeof u !== 'string') return;
+                if (u.indexOf('data:') === 0) return;
+                if (!EXT.test(u) && !(mime && /^(video|audio)\//.test(mime))) return;
+                if (seen[u]) return;
+                seen[u] = 1;
+                try { window.AndroidBridge.onMediaFound(u, mime || null); } catch (e) {}
+            }
+            var of = window.fetch;
+            window.fetch = function(input) {
+                try { report(typeof input === 'string' ? input : (input && input.url)); } catch (e) {}
+                var p = of.apply(this, arguments);
+                try { p.then(function(r) { try { report(r.url, r.headers.get('content-type')); } catch (e) {} }); } catch (e) {}
+                return p;
             };
-
-            // 2. 劫持 XHR
-            var originalXHR = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url) {
-                if (typeof url === 'string' && (url.includes('.mp4') || url.includes('.m3u8') || url.includes('.mp3') || url.includes('stream'))) {
-                    window.AndroidBridge.onMediaFound(url, null);
-                }
-                return originalXHR.apply(this, arguments);
+            var oo = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(m, u) {
+                try { report(u); } catch (e) {}
+                return oo.apply(this, arguments);
             };
-
-            // 3. 动态扫描 DOM (包含动态加载的 video/audio)
+            var os = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function() {
+                var xhr = this;
+                xhr.addEventListener('load', function() {
+                    try { report(xhr.responseURL, xhr.getResponseHeader('content-type')); } catch (e) {}
+                });
+                return os.apply(this, arguments);
+            };
+            function reportBlob(u) {
+                if (seen[u]) return;
+                seen[u] = 1;
+                try {
+                    fetch(u).then(function(r) { return r.blob(); }).then(function(b) {
+                        if (b.size > 120 * 1024 * 1024) return;
+                        var fr = new FileReader();
+                        fr.onload = function() {
+                            try { window.AndroidBridge.onBlobFound(fr.result.split(',')[1], b.type); } catch (e) {}
+                        };
+                        fr.readAsDataURL(b);
+                    }).catch(function() {});
+                } catch (e) {}
+            }
+            function scanMedia() {
+                var els = document.querySelectorAll('video,audio,source,track');
+                for (var i = 0; i < els.length; i++) {
+                    var src = els[i].currentSrc || els[i].src;
+                    if (!src) continue;
+                    if (src.indexOf('blob:') === 0) reportBlob(src); else report(src);
+                }
+            }
+            var lastScan = 0;
+            function scanText() {
+                if (Date.now() - lastScan < 3000) return;
+                lastScan = Date.now();
+                try {
+                    var txt = document.documentElement.innerHTML || '';
+                    var re = /https?:\/\/[^\s"'<>\\]+?\.(mp4|m3u8|mp3|m4a|mkv|webm|flv|mov|ts|zip|rar|apk|pdf)(?:[^\s"'<>\\]*)/gi;
+                    var m, count = 0;
+                    while ((m = re.exec(txt)) !== null && count < 80) { report(m[0]); count++; }
+                } catch (e) {}
+            }
+            setInterval(function() { try { scanMedia(); scanText(); } catch (e) {} }, 1500);
             setInterval(function() {
-                var mediaTags = document.querySelectorAll('video, audio, source');
-                for (var i = 0; i < mediaTags.length; i++) {
-                    var src = mediaTags[i].src || mediaTags[i].currentSrc;
-                    if (src) {
-                        if (src.startsWith('blob:')) {
-                            fetch(src).then(r => r.blob()).then(b => {
-                                var reader = new FileReader();
-                                reader.onload = function() {
-                                    window.AndroidBridge.onBlobFound(reader.result.split(',')[1], b.type);
-                                };
-                                reader.readAsDataURL(b);
-                            }).catch(e => {});
-                        } else {
-                            window.AndroidBridge.onMediaFound(src, null);
-                        }
-                    }
-                }
-            }, 2000);
+                try {
+                    var list = performance.getEntriesByType('resource');
+                    for (var i = 0; i < list.length; i++) report(list[i].name);
+                } catch (e) {}
+            }, 3000);
         })();
     """.trimIndent()
 }
