@@ -14,6 +14,8 @@ import kotlinx.coroutines.withContext
 
 object TaskStore {
     private val gson = Gson()
+    // 独立协程作用域，替代 GlobalScope，避免与调用方生命周期耦合
+    private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     private val dbMutex = Mutex() // 防止并发写入冲突
 
     suspend fun loadAsync(context: Context): List<DownloadTask> = withContext(Dispatchers.IO) {
@@ -44,7 +46,7 @@ object TaskStore {
             )
         }
         
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             dbMutex.withLock {
                 androidx.room.withTransaction(AppDatabase.getDatabase(context)) {
                     dao.clearAll()

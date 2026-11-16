@@ -170,9 +170,10 @@ class Segmenter(private val client: OkHttpClient = OkHttpClient.Builder().connec
                         var r = 3
                         while (r > 0) {
                             if (!isActive) return@withPermit
-                            var call: okhttp3.Call? = null
+                            var callRef: okhttp3.Call? = null
                             try {
-                                call = client.newCall(Request.Builder().url(segment.url).headers(headers).build())
+                                val call = client.newCall(Request.Builder().url(segment.url).headers(headers).build())
+                                callRef = call
                                 activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
                                 call.execute().use { resp ->
                                     var bytes = resp.body?.bytes() ?: ByteArray(0)
@@ -186,7 +187,7 @@ class Segmenter(private val client: OkHttpClient = OkHttpClient.Builder().connec
                                 r--; if (r == 0) throw e; delay(1000)
                             } finally {
                                 // 只移除本次请求，不能清空同任务其它在途分片
-                                call?.let { activeCalls[taskId]?.remove(it) }
+                                callRef?.let { activeCalls[taskId]?.remove(it) }
                             }
                         }
                     }
