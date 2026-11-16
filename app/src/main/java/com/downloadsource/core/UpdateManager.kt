@@ -34,11 +34,12 @@ object UpdateManager {
                     if (json.get("draft")?.asBoolean == true || json.get("prerelease")?.asBoolean == true) continue
                     val tag = json.get("tag_name")?.asString ?: continue
                     val body = json.get("body")?.asString ?: ""
-                    val rawTag = tag.removePrefix("v").substringBefore("-build").substringBefore("-zeta").substringBefore("-omega").trim()
-                    val apkUrl = json.getAsJsonArray("assets").firstOrNull { 
-                        val name = it.asJsonObject.get("name").asString
-                        name.contains(targetName, true) && name.endsWith(".apk") 
-                    }?.asJsonObject?.get("browser_download_url")?.asString
+                    val rawTag = tag.removePrefix("v").substringBefore("-").substringBefore("+").trim()
+                    // 优先命中通道名，退化为任意 APK（本项目产物名为 app-omega-release.apk）
+                    val assets = json.getAsJsonArray("assets")?.map { it.asJsonObject } ?: emptyList()
+                    val apkUrl = (assets.firstOrNull { it.get("name")?.asString?.contains(targetName, true) == true && it.get("name")?.asString?.endsWith(".apk") == true }
+                        ?: assets.firstOrNull { it.get("name")?.asString?.endsWith(".apk") == true })
+                        ?.get("browser_download_url")?.asString
 
                     if (!apkUrl.isNullOrBlank() && isNewer(rawTag, maxVer)) {
                         maxVer = rawTag

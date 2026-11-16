@@ -101,7 +101,7 @@ object DownloadManager {
     /** 文件名净化：阻止 ../ 穿越、非法字符与超长名 */
     fun sanitizeFileName(raw: String): String {
         var name = raw.substringAfterLast('/').substringAfterLast('\\').trim()
-        name = name.replace(Regex("[\u0000-\u001F/:*?"<>|]"), "_")
+        name = name.replace(Regex("[\\p{Cntrl}/:*?\"<>|]"), "_")
         name = name.trim('.', ' ')
         if (name.isEmpty() || name == "." || name == "..") name = "download_${System.currentTimeMillis()}"
         if (name.length > 120) {

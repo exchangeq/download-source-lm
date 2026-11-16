@@ -1,7 +1,7 @@
 package com.downloadsource.core
 
 import android.content.Context
-import android.os.Environment
+import com.downloadsource.storage.DirStore
 import java.io.*
 import java.net.ServerSocket
 import java.net.Socket
@@ -63,10 +63,22 @@ object LocalWebServer {
                     output.flush()
                 } else {
                     val fileName = URLDecoder.decode(filePath.substring(1), "UTF-8")
-                    val file = File(Environment.getExternalStorageDirectory(), "DownloadSource/$fileName")
+                    // 防目录穿越：只接受单一文件名
+                    if (fileName.contains("..") || fileName.contains("/") || fileName.contains("\\")) {
+                        output.print("HTTP/1.1 400 Bad Request\r\n\r\n非法路径")
+                        output.flush()
+                        return@execute
+                    }
+                    val dir = DirStore.resolveDownloadDir(context)
+                    val file = File(dir, fileName)
+                    if (!file.canonicalPath.startsWith(dir.canonicalPath)) {
+                        output.print("HTTP/1.1 403 Forbidden\r\n\r\n禁止访问")
+                        output.flush()
+                        return@execute
+                    }
                     if (file.exists() && file.isFile) {
                         val fileInput = FileInputStream(file)
-                        val headers = "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"$fileName\"\r\nContent-Length: ${file.length()}\r\n\r\n"
+                        val headers = "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"${fileName.replace("\"", "")}\"\r\nContent-Length: ${file.length()}\r\n\r\n"
                         socket.getOutputStream().write(headers.toByteArray())
                         fileInput.copyTo(socket.getOutputStream())
                         fileInput.close()
@@ -83,10 +95,10 @@ object LocalWebServer {
     }
 
     private fun generateHtmlFileList(context: Context): String {
-        val dir = File(Environment.getExternalStorageDirectory(), "DownloadSource")
+        val dir = DirStore.resolveDownloadDir(context)
         val files = dir.listFiles()?.filter { it.isFile } ?: emptyList()
-        val listHtml = files.joinToString("") { file -> 
-            "<li><a href='/${file.name}'>${file.name}</a> <span>(${file.length() / 1024 / 1024} MB)</span></li>" 
+        val listHtml = files.joinToString("") { file ->
+            "<li><a href='/"+java.net.URLEncoder.encode(file.name, "UTF-8")+"'>"+file.name.replace("<","&lt;")+"</a> <span>("+file.length()/1024/1024+" MB)</span></li>"
         }
         return """
             <!DOCTYPE html>

@@ -25,11 +25,16 @@ object Aria2Manager {
             put("jsonrpc", "2.0")
             put("method", "aria2.addUri")
             put("id", "ds")
-            put("params", JSONArray().put(JSONArray().put(url)))
+            val params = JSONArray()
+            // 兼容 http://host:6800/jsonrpc?token=xxx 形式
+            val token = server.substringAfter("token=", "").substringBefore("&")
+            if (token.isNotBlank()) params.put("token:$token")
+            params.put(JSONArray().put(url))
+            put("params", params)
         }.toString()
 
         val req = Request.Builder()
-            .url(server)
+            .url(server.substringBefore("?"))
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
             
