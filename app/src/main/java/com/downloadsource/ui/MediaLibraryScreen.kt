@@ -1,6 +1,7 @@
 package com.downloadsource.ui
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.downloadsource.ThemeStore
 import com.downloadsource.core.AudioService
@@ -44,6 +46,42 @@ private fun isVideoFile(name: String) = VIDEO_EXTS.any { name.endsWith(it, true)
 
 private val AUDIO_EXTS = listOf(".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma", ".ape", ".amr")
 private fun isAudioFile(name: String) = AUDIO_EXTS.any { name.endsWith(it, true) }
+
+private fun fileExt(name: String): String {
+    val idx = name.lastIndexOf('.')
+    return if (idx > 0) name.substring(idx) else ""
+}
+
+private fun mimeOf(name: String): String = when (fileExt(name).lowercase()) {
+    ".mp4", ".mkv", ".webm", ".mov", ".flv", ".m4v", ".avi" -> "video/*"
+    ".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg" -> "audio/*"
+    ".jpg", ".jpeg", ".png", ".gif", ".webp" -> "image/*"
+    ".apk" -> "application/vnd.android.package-archive"
+    ".zip" -> "application/zip"
+    ".pdf" -> "application/pdf"
+    else -> "*/*"
+}
+
+/** 保险箱里的非视频文件：FileProvider 交给系统应用打开，避免 file:// 在 Android 7+ 崩溃 */
+private fun openVaultFile(ctx: android.content.Context, file: File) {
+    runCatching {
+        val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeOf(file.name))
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        ctx.startActivity(intent)
+    }.onFailure {
+        android.widget.Toast.makeText(ctx, "没有可打开该文件的应用", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun formatBytes(size: Long): String = when {
+    size >= 1L shl 30 -> String.format("%.2f GB", size / 1073741824.0)
+    size >= 1L shl 20 -> String.format("%.1f MB", size / 1048576.0)
+    size >= 1024 -> "${size / 1024} KB"
+    else -> "$size B"
+}
 
 private fun uniqueDest(dir: File, name: String): File {
     var dest = File(dir, name)
@@ -76,10 +114,16 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
     var newVaultPwd by remember { mutableStateOf("") }
     var vaultPwd by remember { mutableStateOf("") }
     val vaultDirOf = { DirStore.vaultDir(ctx) }
-    var vaultFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var vaultItems by remember { mutableStateOf<List<com.downloadsource.storage.VaultItem>>(emptyList()) }
     var vaultTick by remember { mutableIntStateOf(0) }
     var vaultPlaying by remember { mutableStateOf<File?>(null) }
+    var vaultPlayingKey by remember { mutableStateOf("") }
     var vaultCount by remember { mutableIntStateOf(0) }
+    var vaultSearch by remember { mutableStateOf("") }
+    var vaultSort by remember { mutableStateOf("时间") }
+    var vaultMenuFor by remember { mutableStateOf<String?>(null) }
+    var renameItem by remember { mutableStateOf<com.downloadsource.storage.VaultItem?>(null) }
+    var renameText by remember { mutableStateOf("") }
 
     val filters = listOf("全部", "视频", "音频", "安装包")
 
@@ -89,79 +133,177 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
                 val dir = DirStore.resolveDownloadDir(ctx)
                 files = dir.listFiles()?.filter { it.isFile && !it.name.startsWith(".") } ?: emptyList()
             } else {
-                val vaultDir = DirStore.vaultDir(ctx)
-                vaultFiles = vaultDir.walkTopDown().filter { it.isFile && it.length() > 0 }
-                    .sortedByDescending { it.lastModified() }.toList()
-                vaultCount = vaultFiles.size
+                vaultItems = com.downloadsource.storage.VaultRepo.list(ctx)
+                vaultCount = vaultItems.size
             }
         }
     }
 
     vaultPlaying?.let { vf ->
-        VideoPlayerScreen(uri = android.net.Uri.fromFile(vf), onBack = { vaultPlaying = null; vaultTick++ })
+        VideoPlayerScreen(uri = android.net.Uri.fromFile(vf), key = vaultPlayingKey, onBack = {
+            runCatching { vf.delete() }
+            runCatching { vf.parentFile?.listFiles()?.forEach { it.delete() } }
+            vaultPlaying = null; vaultTick++
+        })
         return
     }
 
+    fun openVaultItem(item: com.downloadsource.storage.VaultItem, play: Boolean) {
+        val tmp = com.downloadsource.storage.VaultRepo.decryptToCache(ctx, item)
+        if (tmp == null) {
+            android.widget.Toast.makeText(ctx, "解密失败，文件可能已损坏", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (play) { vaultPlayingKey = item.id; vaultPlaying = tmp } else openVaultFile(ctx, tmp)
+    }
+
     if (showVault) {
-        Column(Modifier.fillMaxSize().padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { showVault = false }) { Icon(Icons.Default.ArrowBack, null, tint = palette.onSurface) }
-                Text("🔒 私密保险箱", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = palette.onSurface)
+        BackHandler { showVault = false }
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).padding(top = 40.dp, bottom = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                IconButton(onClick = { showVault = false }) { Icon(Icons.Default.ArrowBack, "返回", tint = palette.onSurface) }
+                Column(Modifier.weight(1f)) {
+                    Text("私密保险箱", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = palette.onSurface)
+                    Text("${vaultItems.size} 个文件 · AES-256 加密存储", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                }
+                IconButton(onClick = { vaultTick++ }) { Icon(Icons.Default.Refresh, "刷新", tint = palette.onSurface) }
+                IconButton(onClick = { vaultSort = if (vaultSort == "时间") "大小" else "时间" }) { Icon(Icons.Default.Sort, "排序：$vaultSort", tint = palette.onSurface) }
             }
-            Spacer(Modifier.height(16.dp))
-            if (vaultFiles.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("保险箱空空如也，在下载列表点「移入保险箱」即可藏到这里", color = palette.onSurfaceDim) }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(palette.surface)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Search, null, tint = palette.onSurfaceDim, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                BasicTextField(
+                    value = vaultSearch, onValueChange = { vaultSearch = it }, singleLine = true,
+                    textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodyMedium.fontSize),
+                    cursorBrush = SolidColor(palette.primary.first()),
+                    decorationBox = { inner -> Box { if (vaultSearch.isEmpty()) Text("搜索保险箱文件", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall); inner() } },
+                    modifier = Modifier.weight(1f)
+                )
+                if (vaultSearch.isNotEmpty()) Icon(
+                    Icons.Default.Close, "清空", tint = palette.onSurfaceDim,
+                    modifier = Modifier.size(18.dp).clickable { vaultSearch = "" }
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            val shown = vaultItems.filter { vaultSearch.isBlank() || it.name.contains(vaultSearch, true) }
+                .let { if (vaultSort == "大小") it.sortedByDescending { i -> i.size } else it }
+            if (shown.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.Lock, null, tint = palette.onSurfaceDim, modifier = Modifier.size(36.dp))
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (vaultItems.isEmpty()) "保险箱空空如也\n在下载列表点「移入保险箱」即可加密藏到这里" else "没有匹配的文件",
+                            color = palette.onSurfaceDim, style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(vaultFiles) { file ->
-                        val isVideo = isVideoFile(file.name)
-                        val isAudio = isAudioFile(file.name)
-                        val sizeText = when {
-                            file.length() >= 1L shl 30 -> String.format("%.2f GB", file.length() / 1073741824.0)
-                            file.length() >= 1L shl 20 -> String.format("%.1f MB", file.length() / 1048576.0)
-                            file.length() >= 1024 -> "${file.length() / 1024} KB"
-                            else -> "${file.length()} B"
-                        }
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(palette.surface).clickable { vaultPlaying = file }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            val thumb = if (isVideo) remember(file.path, file.lastModified()) {
-                                runCatching {
-                                    if (android.os.Build.VERSION.SDK_INT >= 29)
-                                        android.media.ThumbnailUtils.createVideoThumbnail(file, android.util.Size(160, 96), null)
-                                    else @Suppress("DEPRECATION") android.media.ThumbnailUtils.createVideoThumbnail(file.path, android.provider.MediaStore.Video.Thumbnails.MINI_KIND)
-                                }.getOrNull()
-                            } else null
-                            Box(Modifier.width(64.dp).height(42.dp).clip(RoundedCornerShape(10.dp)).background(palette.primary.first().copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
-                                if (thumb != null) androidx.compose.foundation.Image(
-                                    bitmap = thumb.asImageBitmap(), contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                                ) else Icon(
+                    items(shown, key = { it.id }) { item ->
+                        val isVideo = isVideoFile(item.name)
+                        val isAudio = isAudioFile(item.name)
+                        val sizeText = formatBytes(item.size)
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(palette.surface)
+                                .clickable { openVaultItem(item, isVideo || isAudio) }
+                                .padding(start = 10.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                Modifier.width(72.dp).height(46.dp).clip(RoundedCornerShape(10.dp))
+                                    .background(palette.primary.first().copy(alpha = 0.12f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
                                     when { isVideo -> Icons.Default.PlayArrow; isAudio -> Icons.Default.PlayArrow; else -> Icons.Default.InsertDriveFile },
                                     if (isVideo || isAudio) "播放" else "文件", tint = palette.primary.first()
                                 )
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(file.name, color = palette.onSurface, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("$sizeText · ${java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(file.lastModified()))}", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                                Text(item.name, color = palette.onSurface, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    "$sizeText · ${java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(item.addedAt))} · 已加密",
+                                    color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall
+                                )
                             }
-                            IconButton(onClick = {
-                                val dir = DirStore.resolveDownloadDir(ctx)
-                                val dest = uniqueDest(dir, file.name)
-                                val ok = file.renameTo(dest) || runCatching { file.copyTo(dest, false); file.delete(); dest.length() > 0 }.getOrDefault(false)
-                                if (ok) {
-                                    vaultFiles = (vaultDirOf().listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() } ?: emptyList())
-                                    vaultTick++
-                                    android.widget.Toast.makeText(ctx, "已移出到下载目录", android.widget.Toast.LENGTH_SHORT).show()
-                                } else android.widget.Toast.makeText(ctx, "移出失败", android.widget.Toast.LENGTH_SHORT).show()
-                            }) { Icon(Icons.Default.LockOpen, "移出", tint = palette.primary.first()) }
-                            IconButton(onClick = {
-                                if (file.delete()) {
-                                    vaultFiles = vaultFiles - file
-                                    vaultTick++
-                                    android.widget.Toast.makeText(ctx, "已删除", android.widget.Toast.LENGTH_SHORT).show()
-                                } else android.widget.Toast.makeText(ctx, "删除失败", android.widget.Toast.LENGTH_SHORT).show()
-                            }) { Icon(Icons.Default.Delete, "删除", tint = palette.onSurfaceDim) }
+                            Box {
+                                IconButton(onClick = { vaultMenuFor = item.id }) {
+                                    Icon(Icons.Default.MoreVert, "更多", tint = palette.onSurfaceDim)
+                                }
+                                DropdownMenu(expanded = vaultMenuFor == item.id, onDismissRequest = { vaultMenuFor = null }) {
+                                    DropdownMenuItem(text = { Text("播放") }, onClick = { vaultMenuFor = null; openVaultItem(item, true) })
+                                    DropdownMenuItem(text = { Text("重命名") }, onClick = {
+                                        vaultMenuFor = null; renameItem = item; renameText = item.name
+                                    })
+                                    DropdownMenuItem(text = { Text("移出到下载目录") }, onClick = {
+                                        vaultMenuFor = null
+                                        val out = com.downloadsource.storage.VaultRepo.export(ctx, item, DirStore.resolveDownloadDir(ctx))
+                                        android.widget.Toast.makeText(ctx, if (out != null) "已解密移出：${out.name}" else "移出失败", android.widget.Toast.LENGTH_SHORT).show()
+                                        vaultTick++
+                                    })
+                                    DropdownMenuItem(text = { Text("用其他应用打开") }, onClick = {
+                                        vaultMenuFor = null
+                                        val tmp = com.downloadsource.storage.VaultRepo.decryptToCache(ctx, item)
+                                        if (tmp != null) openVaultFile(ctx, tmp) else android.widget.Toast.makeText(ctx, "解密失败", android.widget.Toast.LENGTH_SHORT).show()
+                                    })
+                                    DropdownMenuItem(text = { Text("分享") }, onClick = {
+                                        vaultMenuFor = null
+                                        val tmp = com.downloadsource.storage.VaultRepo.decryptToCache(ctx, item)
+                                        if (tmp != null) runCatching {
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", tmp)
+                                            val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                type = mimeOf(item.name); putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            ctx.startActivity(android.content.Intent.createChooser(share, "分享"))
+                                        }
+                                    })
+                                    DropdownMenuItem(text = { Text("删除", color = Color(0xFFFF5A5A)) }, onClick = {
+                                        vaultMenuFor = null
+                                        com.downloadsource.storage.VaultRepo.delete(ctx, item)
+                                        android.widget.Toast.makeText(ctx, "已删除", android.widget.Toast.LENGTH_SHORT).show()
+                                        vaultTick++
+                                    })
+                                }
+                            }
                         }
+                    }
+                }
+            }
+        }
+
+        renameItem?.let { item ->
+            Dialog(onDismissRequest = { renameItem = null }) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(palette.surface).padding(18.dp)) {
+                    Text("重命名", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                    Spacer(Modifier.height(10.dp))
+                    BasicTextField(
+                        value = renameText, onValueChange = { renameText = it }, singleLine = true,
+                        textStyle = TextStyle(color = palette.onSurface, fontSize = 16.sp),
+                        cursorBrush = SolidColor(palette.primary.first()),
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .background(palette.background.first().copy(alpha = 0.5f)).padding(12.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { renameItem = null }) { Text("取消") }
+                        TextButton(onClick = {
+                            val raw = renameText.trim()
+                            if (raw.isNotEmpty()) {
+                                val name = if (raw.contains('.')) raw else raw + fileExt(item.name)
+                                com.downloadsource.storage.VaultRepo.rename(ctx, item, name)
+                                android.widget.Toast.makeText(ctx, "已重命名", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            renameItem = null
+                            vaultTick++
+                        }) { Text("保存") }
                     }
                 }
             }
@@ -244,19 +386,14 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
                             Text("${file.length() / 1024 / 1024} MB · ${java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(file.lastModified())}", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
                         }
                         IconButton(onClick = {
-                            // 保险箱目标名必须唯一：旧实现同名直接覆盖，会把保险箱里已有视频冲掉
-                            val vaultDir = DirStore.vaultDir(ctx)
-                            val dest = uniqueDest(vaultDir, file.name)
-                            val ok = file.renameTo(dest) || runCatching {
-                                file.copyTo(dest, overwrite = false)
-                                file.delete()
-                                dest.exists() && dest.length() > 0
+                            val ok = runCatching {
+                                com.downloadsource.storage.VaultRepo.import(ctx, file, file.name)
                             }.getOrDefault(false)
                             if (ok) {
                                 files = files - file
-                                vaultFiles = vaultDir.walkTopDown().filter { it.isFile && it.length() > 0 }.sortedByDescending { it.lastModified() }.toList()
-                                vaultCount = vaultFiles.size
-                                android.widget.Toast.makeText(ctx, "已移入保险箱", android.widget.Toast.LENGTH_SHORT).show()
+                                vaultItems = com.downloadsource.storage.VaultRepo.list(ctx)
+                                vaultCount = vaultItems.size
+                                android.widget.Toast.makeText(ctx, "已加密移入保险箱", android.widget.Toast.LENGTH_SHORT).show()
                             } else {
                                 android.widget.Toast.makeText(ctx, "移入失败，文件保持原处", android.widget.Toast.LENGTH_SHORT).show()
                             }

@@ -319,18 +319,11 @@ object DownloadManager {
             Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "源文件不存在：${srcFile.name}", android.widget.Toast.LENGTH_SHORT).show() }
             return
         }
-        val vaultDir = DirStore.vaultDir(context)
-        val destFile = File(vaultDir, uniqueName(vaultDir, t.fileName))
-        // renameTo 在跨卷/部分 ROM 上会失败，失败改走复制+删除，绝不让文件丢在半路
-        val moved = srcFile.renameTo(destFile) || runCatching {
-            srcFile.copyTo(destFile, overwrite = false)
-            srcFile.delete()
-            destFile.exists() && destFile.length() > 0
-        }.getOrDefault(false)
+        val moved = com.downloadsource.storage.VaultRepo.import(context, srcFile, t.fileName)
         if (moved) {
             _tasks.update { list -> list.filterNot { it.id == id } }
             TaskStore.save(context, _tasks.value)
-            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "已移入私密保险箱", android.widget.Toast.LENGTH_SHORT).show() }
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "已加密移入私密保险箱", android.widget.Toast.LENGTH_SHORT).show() }
         } else {
             Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "移入失败，请检查存储权限", android.widget.Toast.LENGTH_SHORT).show() }
         }
