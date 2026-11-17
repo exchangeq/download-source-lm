@@ -120,7 +120,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                     Text("主题风格", color = palette.onSurface, modifier = Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("默认", "粉白", "极光", "日落", "深海", "赛博").forEachIndexed { index, name ->
+                    listOf("默认", "粉白", "极光", "日落", "深海", "赛博", "毛玻璃").forEachIndexed { index, name ->
                         Box(Modifier.clip(RoundedCornerShape(50))
                             .background(if (themeStyle == index) Brush.linearGradient(palette.primary) else Brush.linearGradient(listOf(palette.surface, palette.surface)))
                             .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(50))

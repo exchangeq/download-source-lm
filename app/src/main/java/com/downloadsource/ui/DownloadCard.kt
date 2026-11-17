@@ -70,7 +70,7 @@ fun DownloadCard(
             modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(20.dp))
                 .background(palette.surface)
-                .border(1.dp, palette.onSurface.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
+                .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), palette.onSurface.copy(alpha = 0.12f))), RoundedCornerShape(20.dp))
                 .combinedClickable(
                     onClick = {
                         // 点击展开进度详情；已完成则直接打开文件

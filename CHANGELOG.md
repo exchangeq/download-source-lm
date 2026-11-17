@@ -194,3 +194,38 @@
 15. 复制当前网址 / 一键关闭全部标签 / 站点自定义 JS / 阅读模式 / 长截图 / 导出 PDF / 数据管理 / 无痕模式（承接并整合进本次大版本）
 
 引擎侧同时修正：分片进度跨线程写入收敛到单一状态更新、HTTP 200 回退分片校验、区间起点校验、M3U8 密钥请求携带 UA/Referer、文件名 GBK 回退解析。
+
+## v7.5.0-lm
+
+### 文件名解析重写
+
+- 新增 `FileNameResolver`：响应头 → URL → Content-Type 三路兜底，不再落到 `file_xxx.bin`
+- 支持 `filename*=UTF-8''…` / `filename*=GBK''…` / 带引号 / 带分号 / 双百分号编码
+- 支持 RFC 2047（`=?UTF-8?B?…?=`）中文文件名
+- ISO-8859-1 被误当 UTF-8 的乱码自动纠正，中文名不再“Ã¤Â¸Â­”
+- URL 无扩展名时按 MIME 补 `.mp4/.m3u8/.zip/.apk/.epub/.flac/…`
+- `?file=`、`?filename=` 这类参数式链接也能取到真名
+- 文件名长度、控制符、路径穿越统一清洗
+
+### 格式覆盖
+
+- 识别并归类 60+ 扩展名：视频（mp4/mkv/webm/avi/mov/flv/m4v/ts/m3u8/mpd/ogv/wmv/rmvb/3gp）、音频（mp3/m4a/aac/flac/wav/ogg/opus/wma/ape）、压缩（zip/rar/7z/tar/gz/xz/bz2/zst/cab/iso/torrent）、安装包（apk/xapk/apks/aab/ipa/exe/msi/dmg）、文档（pdf/epub/mobi/docx/xlsx/pptx/csv/json/xml）
+
+### 稳定性
+
+- 分片下载前按实际文件大小校验剩余空间，空间不足立刻失败
+- 每片最多 4 次重试 + 退避（0.8s→3.2s→6.4s），区间起点错位自动重下
+- 全部完成后才标记成功，清理 `.part` 残留
+
+### UI / 动画
+
+- 新增「毛玻璃」主题：磨砂半透明面板 + 三色流动极光背景
+- 卡片改为渐变高光描边，层次更明显
+- 页面入场动画改为弹簧曲线（damping 0.62），带轻微回弹
+- 浏览器页仍保持纯布局位移（不碰图层，避免 WebView 黑屏）
+
+### 资源嗅探
+
+- 扩展名规则从 16 种扩到 40 种，含 HLS/DASH
+- 新增中英文双语链接扫描：命中「下载/播放/高清/附件」与 download/play/stream/file 的链接一并嗅探
+- `Content-Type: application/vnd.apple.mpegurl` / `dash+xml` 直接识别为可下流

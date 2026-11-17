@@ -73,6 +73,18 @@ val DeepSeaDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFF5B9CF8), Co
 val CyberLightPalette = LightPalette.copy(primary = listOf(Color(0xFF8B5CF6), Color(0xFF22D3EE)), background = listOf(Color(0xFFF6F2FF), Color(0xFFE8E1FF)))
 val CyberDarkPalette = DarkPalette.copy(primary = listOf(Color(0xFFA78BFA), Color(0xFF67E8F9)), background = listOf(Color(0xFF120C24), Color(0xFF1B1035)))
 
+// 毛玻璃（半透明磨砂面板 + 渐变背景）
+val GlassLightPalette = LightPalette.copy(
+    primary = listOf(Color(0xFF6D8BFF), Color(0xFF9B7BFF)),
+    background = listOf(Color(0xFFEAF1FF), Color(0xFFF6ECFF), Color(0xFFE8FFF9)),
+    surface = Color(0xB8FFFFFF)
+)
+val GlassDarkPalette = DarkPalette.copy(
+    primary = listOf(Color(0xFF8BA4FF), Color(0xFFB79BFF)),
+    background = listOf(Color(0xFF0A1120), Color(0xFF141A31), Color(0xFF0B1B1D)),
+    surface = Color(0x9E1B2233)
+)
+
 val LocalPalette = staticCompositionLocalOf { LightPalette }
 
 @Composable
@@ -85,6 +97,7 @@ fun rememberPalette(): GradientPalette {
         3 -> if (isDark) SunsetDarkPalette else SunsetLightPalette
         4 -> if (isDark) DeepSeaDarkPalette else DeepSeaLightPalette
         5 -> if (isDark) CyberDarkPalette else CyberLightPalette
+        6 -> if (isDark) GlassDarkPalette else GlassLightPalette
         else -> if (isDark) DarkPalette else LightPalette
     }
 }

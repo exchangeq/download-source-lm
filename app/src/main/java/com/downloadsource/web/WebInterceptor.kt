@@ -30,12 +30,12 @@ class WebInterceptor {
         (function() {
             if (window.__lmSniffInstalled) return;
             window.__lmSniffInstalled = true;
-            var EXT = /(\.mp4|\.m3u8|\.mp3|\.m4a|\.aac|\.flac|\.wav|\.mkv|\.webm|\.flv|\.mov|\.ts|\.zip|\.rar|\.7z|\.apk|\.pdf)(\?|#|$)/i;
+            var EXT = /(\.mp4|\.m4v|\.mkv|\.webm|\.mov|\.flv|\.avi|\.wmv|\.ogv|\.3gp|\.m3u8|\.mpd|\.ts|\.mp3|\.m4a|\.aac|\.flac|\.wav|\.ogg|\.opus|\.wma|\.ape|\.zip|\.rar|\.7z|\.tar|\.gz|\.xz|\.bz2|\.zst|\.apk|\.xapk|\.apks|\.ipa|\.pdf|\.epub|\.mobi|\.docx?|\.xlsx?|\.pptx?|\.csv|\.torrent|\.iso|\.dmg|\.exe|\.msi)(\?|#|$)/i;
             var seen = {};
             function report(u, mime) {
                 if (!u || typeof u !== 'string') return;
                 if (u.indexOf('data:') === 0) return;
-                if (!EXT.test(u) && !(mime && /^(video|audio)\//.test(mime))) return;
+                if (!EXT.test(u) && !(mime && (/^(video|audio)\//.test(mime) || /mpegurl|dash\+xml/.test(mime)))) return;
                 if (seen[u]) return;
                 seen[u] = 1;
                 try { window.AndroidBridge.onMediaFound(u, mime || null); } catch (e) {}
@@ -82,6 +82,20 @@ class WebInterceptor {
                     if (src.indexOf('blob:') === 0) reportBlob(src); else report(src);
                 }
             }
+            // 中英文双语链接扫描：下载/播放/高清 与 download/play/stream
+            var KEYWORDS = /(下载|播放|高清|音轨|视频|音频|附件|download|Download|DOWNLOAD|play|Play|stream|Stream|video|audio|media|file)/;
+            function scanLinks() {
+                try {
+                    var as = document.querySelectorAll('a,button,[role="button"]');
+                    for (var i = 0; i < as.length && i < 400; i++) {
+                        var el = as[i];
+                        var label = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+                        if (!KEYWORDS.test(label)) continue;
+                        var href = el.href || el.getAttribute('data-href') || el.getAttribute('data-url') || el.getAttribute('data-src');
+                        if (href) report(href);
+                    }
+                } catch (e) {}
+            }
             var lastScan = 0;
             function scanText() {
                 if (Date.now() - lastScan < 3000) return;
@@ -93,7 +107,7 @@ class WebInterceptor {
                     while ((m = re.exec(txt)) !== null && count < 80) { report(m[0]); count++; }
                 } catch (e) {}
             }
-            setInterval(function() { try { scanMedia(); scanText(); } catch (e) {} }, 1500);
+            setInterval(function() { try { scanMedia(); scanText(); scanLinks(); } catch (e) {} }, 1500);
             setInterval(function() {
                 try {
                     var list = performance.getEntriesByType('resource');

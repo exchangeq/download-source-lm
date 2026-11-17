@@ -3,6 +3,8 @@ package com.downloadsource.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -26,7 +28,7 @@ import kotlin.math.roundToInt
 @Composable
 fun PageMotion(index: Int, content: @Composable () -> Unit) {
     val anim = remember { Animatable(0f) }
-    LaunchedEffect(index) { anim.animateTo(1f, tween(760, easing = FastOutSlowInEasing)) }
+    LaunchedEffect(index) { anim.animateTo(1f, spring(dampingRatio = 0.62f, stiffness = Spring.StiffnessLow)) }
     val t = anim.value
     val phase = t * PI.toFloat()
 

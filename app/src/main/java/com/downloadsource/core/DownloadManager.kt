@@ -139,12 +139,12 @@ object DownloadManager {
     private fun createCategoryDir(baseDir: File, fileName: String): File {
         val ext = fileName.substringAfterLast('.', "").lowercase()
         val sub = when (ext) {
-            "mp4", "mkv", "avi", "mov", "ts", "webm", "flv" -> "视频"
-            "mp3", "flac", "wav", "aac", "m4a", "ogg" -> "音频"
-            "apk", "exe", "ipa" -> "安装包"
-            "jpg", "jpeg", "png", "gif", "webp", "svg" -> "图片"
-            "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv" -> "文档"
-            "zip", "rar", "7z", "tar", "gz" -> "压缩包"
+            "mp4", "mkv", "avi", "mov", "ts", "webm", "flv", "m4v", "wmv", "ogv", "rmvb", "3gp", "m3u8", "mpd" -> "视频"
+            "mp3", "flac", "wav", "aac", "m4a", "ogg", "opus", "wma", "ape", "aiff" -> "音频"
+            "apk", "xapk", "apks", "aab", "exe", "ipa", "msi", "dmg", "iso" -> "安装包"
+            "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic" -> "图片"
+            "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "epub", "mobi", "json", "xml" -> "文档"
+            "zip", "rar", "7z", "tar", "gz", "xz", "bz2", "zst", "cab", "torrent" -> "压缩包"
             else -> "其他"
         }
         return File(baseDir, sub).apply { if (!exists()) mkdirs() }
@@ -311,38 +311,11 @@ object DownloadManager {
         }
     }
 
-    /** 兼容 GBK / 百分号编码 / 带引号的文件名，避免中文变乱码或落成 .bin */
-    private fun decodeFileName(raw: String): String {
-        val trimmed = raw.trim().trim('"', '\'').trim()
-        if (trimmed.isEmpty()) return ""
-        val utf8 = runCatching { java.net.URLDecoder.decode(trimmed, "UTF-8") }.getOrDefault(trimmed)
-        if (!utf8.contains('\uFFFD')) return utf8
-        return runCatching { java.net.URLDecoder.decode(trimmed, "GBK") }.getOrDefault(utf8)
-    }
-
-    private fun parseNameFrom(resp: okhttp3.Response): String? {
-        val disposition = resp.header("Content-Disposition") ?: ""
-        // RFC 5987: filename*=UTF-8''%E4%B8%AD.zip
-        Regex("filename\\*=UTF-8''([^;]+)").find(disposition)?.groupValues?.get(1)?.let { return decodeFileName(it) }
-        Regex("filename=\"?([^;\"]+)\"?").find(disposition)?.groupValues?.get(1)?.let { return decodeFileName(it) }
-        val last = resp.request.url.encodedPath.substringAfterLast('/')
-        if (last.isNotBlank() && last.contains('.')) return decodeFileName(last)
-        // 全格式兜底：按 Content-Type 推断扩展名，避免 zip/apk/rar 变成 .bin
-        val mime = resp.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase() ?: ""
-        val mapped = when (mime) {
-            "application/zip", "application/x-zip-compressed" -> ".zip"
-            "application/vnd.android.package-archive" -> ".apk"
-            "application/x-rar-compressed", "application/vnd.rar" -> ".rar"
-            "application/x-7z-compressed" -> ".7z"
-            "application/pdf" -> ".pdf"
-            "video/mp4" -> ".mp4"
-            "video/x-matroska" -> ".mkv"
-            "audio/mpeg" -> ".mp3"
-            "application/vnd.apple.mpegurl", "application/x-mpegurl" -> ".m3u8"
-            "application/octet-stream" -> ".bin"
-            else -> ""
-        }
-        if (mapped.isNotEmpty() && mapped != ".bin") return "file_${System.currentTimeMillis()}$mapped"
-        return null
-    }
+    /** 兼容 GBK / 百分号编码 / RFC2047 / 带引号 / 缺扩展名，统一交给 FileNameResolver */
+    private fun parseNameFrom(resp: okhttp3.Response): String? =
+        FileNameResolver.resolve(
+            resp.request.url.toString(),
+            resp.header("Content-Disposition"),
+            resp.header("Content-Type")
+        )
 }
