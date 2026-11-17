@@ -44,7 +44,6 @@ class Segmenter(private val client: OkHttpClient) {
         
         if (url.contains(".m3u8", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
         if (url.contains(".mpd", true)) return@coroutineScope downloadDash(taskId, url, outFile, parts, headers, onTick)
-        if (url.endsWith(".ts", true) && !outFile.name.endsWith(".ts", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
 
         // 核心修复：智能探测文件大小与 Range 支持
         val (total, supportsRange) = probeFileSize(url, headers)
@@ -239,8 +238,12 @@ class Segmenter(private val client: OkHttpClient) {
     }
 
     private suspend fun downloadM3u8(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
-        var finalUrl = url
-        if (url.endsWith(".ts", true)) finalUrl = url.substringBeforeLast("/").plus("/index.m3u8")
+        val finalUrl = url
+        // 直播流（无 ENDLIST）：按目标时长持续追帧，直到结束或用户停止
+        val probe = runCatching { fetchText(finalUrl, headers) }.getOrDefault("")
+        if (probe.contains("#EXTINF") && !probe.contains("#EXT-X-ENDLIST")) {
+            return@coroutineScope downloadLiveHls(taskId, finalUrl, outFile, parts, headers, onTick)
+        }
         val segments = parseM3u8(finalUrl, mutableSetOf(), headers)
         if (segments.isEmpty()) error("未找到有效的 TS 分片 (´･_･`)")
         
@@ -308,6 +311,82 @@ class Segmenter(private val client: OkHttpClient) {
             throw Exception("TS 合并失败 (´･_･`)")
         }
         mergedTs.delete()
+        outFile
+    }
+
+    private suspend fun fetchText(url: String, headers: okhttp3.Headers): String = withContext(Dispatchers.IO) {
+        client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+    }
+
+    /** 直播 HLS：滚动刷新播放列表，增量追帧并落盘，结束后合成 mp4 */
+    private suspend fun downloadLiveHls(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
+        val tmpDir = File(outFile.parentFile, ".${outFile.name}.ts_parts").apply { mkdirs() }
+        val seen = LinkedHashMap<String, Int>()
+        val downloaded = AtomicLong(0)
+        val semaphore = Semaphore(parts)
+        val ticker = launch(Dispatchers.Default) {
+            while (isActive) { delay(500); onTick(downloaded.get(), seen.size.toLong().coerceAtLeast(1), 0, emptyList()) }
+        }
+        var ended = false
+        var cycles = 0
+        try {
+            while (currentCoroutineContext().isActive && cycles < 240 && !ended) {
+                cycles++
+                val text = runCatching { fetchText(url, headers) }.getOrDefault("")
+                if (text.contains("#EXT-X-ENDLIST")) ended = true
+                val segs = runCatching { parseM3u8(url, mutableSetOf(), headers) }.getOrDefault(emptyList())
+                val batch = mutableListOf<Deferred<Unit>>()
+                segs.forEach { seg ->
+                    if (seen.containsKey(seg.url)) return@forEach
+                    if (seen.size >= 4000) return@forEach
+                    val idx = seen.size
+                    seen[seg.url] = idx
+                    val part = File(tmpDir, "$idx.ts")
+                    if (part.exists() && part.length() > 0L) { downloaded.incrementAndGet(); return@forEach }
+                    batch.add(async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            var attempt = 0
+                            while (attempt < 3) {
+                                try {
+                                    val rb = Request.Builder().url(seg.url).headers(headers)
+                                    seg.range?.let { rb.header("Range", "bytes=$it") }
+                                    client.newCall(rb.build()).execute().use { r ->
+                                        if (!r.isSuccessful) error("分片 HTTP ${r.code}")
+                                        var bytes = r.body?.bytes() ?: ByteArray(0)
+                                        if (seg.key != null && seg.iv != null) bytes = decryptAES(bytes, seg.key, seg.iv)
+                                        part.writeBytes(bytes)
+                                    }
+                                    downloaded.incrementAndGet()
+                                    break
+                                } catch (e: Exception) {
+                                    if (e is CancellationException) throw e
+                                    attempt++
+                                    if (attempt >= 3) throw e
+                                    delay(800L * attempt)
+                                }
+                            }
+                        }
+                    })
+                }
+                batch.forEach { runCatching { it.await() } }
+                if (ended) break
+                val target = Regex("#EXT-X-TARGETDURATION:(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 6L
+                delay(target.coerceIn(2L, 30L) * 1000L)
+            }
+        } finally { ticker.cancel() }
+
+        val mergedTs = File(outFile.parentFile, "${outFile.name}.tmp_merged.ts")
+        val files = (0 until seen.size).map { File(tmpDir, "$it.ts") }.filter { it.exists() && it.length() > 0 }
+        if (files.isEmpty()) error("未追上任何直播分片 (´･_･`)")
+        if (!ZeroCore.mergeFiles(files.map { it.absolutePath }.toTypedArray(), mergedTs.absolutePath)) error("直播分片合并失败")
+        val ok = withContext(Dispatchers.IO) { runCatching { remuxTsToMp4(mergedTs, outFile); true }.getOrDefault(false) }
+        onTick(downloaded.get(), downloaded.get().coerceAtLeast(1), 0, emptyList())
+        if (!ok) {
+            val ts = File(outFile.parentFile, outFile.name.substringBeforeLast('.') + ".ts")
+            if (mergedTs.renameTo(ts)) return@coroutineScope ts
+            throw Exception("直播合成失败 (´･_･`)")
+        }
+        tmpDir.deleteRecursively()
         outFile
     }
 
@@ -546,8 +625,8 @@ class Segmenter(private val client: OkHttpClient) {
                 val template = Regex("<SegmentTemplate([^>]*?)/?>", setOf(RegexOption.DOT_MATCHES_ALL)).find(body)?.groupValues?.get(1)
                     ?: Regex("<SegmentTemplate([^>]*?)/?>", setOf(RegexOption.DOT_MATCHES_ALL)).find(headAttrs)?.groupValues?.get(1)
                 val segList = Regex("<SegmentURL([^>]*?)/?>").findAll(body).mapNotNull { attrOf(it.groupValues[1], "media") }.toList()
-                val init: String?
-                val segs: List<String>
+                var init: String? = null
+                var segs: List<String> = emptyList()
                 if (!segList.isEmpty()) {
                     init = null
                     segs = segList.map { resolveUrl(mpdUrl, joinBase(baseUrl, it)) }
@@ -573,6 +652,10 @@ class Segmenter(private val client: OkHttpClient) {
                             .replace("\$Time\$", (((i * segDur) / timescale).toLong()).toString())
                         resolveUrl(mpdUrl, joinBase(baseUrl, tpl))
                     }
+                } else if (body.contains("SegmentBase") && baseUrl.isNotBlank()) {
+                    // 单文件 Representation（SegmentBase/indexRange）：整文件直下
+                    init = null
+                    segs = listOf(resolveUrl(mpdUrl, baseUrl))
                 } else {
                     return@map null
                 }

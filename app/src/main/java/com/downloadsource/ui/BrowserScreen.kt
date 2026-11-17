@@ -773,8 +773,15 @@ fun BrowserScreen(
                         TextButton(onClick = { sniffedUrls.clear(); showSniffList = false }) { Text("清空") }
                     }
                 }
+                val grouped = sniffedUrls.groupBy { sniffKind(it.url) }
+                val order = listOf("视频", "音频", "安装包", "压缩包", "文档", "图片", "其它")
                 LazyColumn {
-                    items(sniffedUrls) { media ->
+                    order.forEach { kind ->
+                        val list = grouped[kind] ?: return@forEach
+                        item(key = "h_$kind") {
+                            Text("$kind · ${list.size}", color = palette.onSurfaceDim, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+                        }
+                        items(list) { media ->
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
                             pendingDownloadUrl = media.url; showDownloadDialog = true; showSniffList = false
                         }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -786,6 +793,7 @@ fun BrowserScreen(
                                 cm.setPrimaryClip(android.content.ClipData.newPlainText("url", media.url))
                                 android.widget.Toast.makeText(ctx, "已复制链接", android.widget.Toast.LENGTH_SHORT).show()
                             }) { Text("复制") }
+                        }
                         }
                     }
                 }
@@ -986,5 +994,19 @@ private fun savePageHtml(ctx: android.content.Context, webView: WebView) {
         } catch (e: Exception) {
             android.widget.Toast.makeText(ctx, "保存失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
         }
+    }
+}
+
+/** 按扩展名给嗅探结果分组，便于批量挑同类资源 */
+private fun sniffKind(url: String): String {
+    val ext = url.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "ts", "m3u8", "mpd", "ogv", "wmv", "rmvb", "3gp" -> "视频"
+        "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma", "ape" -> "音频"
+        "apk", "xapk", "apks", "aab", "ipa", "exe", "msi", "dmg" -> "安装包"
+        "zip", "rar", "7z", "tar", "gz", "xz", "bz2", "zst", "iso", "torrent" -> "压缩包"
+        "pdf", "epub", "mobi", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "json", "xml" -> "文档"
+        "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic" -> "图片"
+        else -> "其它"
     }
 }
