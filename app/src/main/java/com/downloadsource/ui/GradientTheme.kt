@@ -144,22 +144,9 @@ fun GradientBackground(palette: GradientPalette, content: @Composable () -> Unit
                         .offset(x = (-130).dp * phase, y = 50.dp * phase)
                         .background(Brush.radialGradient(listOf(palette.accent.first().copy(alpha = glow * 0.75f), Color.Transparent)), CircleShape)
                 )
-                // 三角函数入场：正弦抬升 + 余弦微旋，收尾同时归零，避免机械直线感
-                val enter = remember { Animatable(0f) }
-                LaunchedEffect(Unit) { enter.animateTo(1f, tween(950, easing = FastOutSlowInEasing)) }
-                val p = enter.value
-                val scale = 0.92f + 0.08f * sin(p * PI.toFloat() / 2f)
-                val dy = 34f * (1f - p) + 8f * sin(p * PI.toFloat())
-                val rot = 5f * cos(p * PI.toFloat() / 2f)
-                Box(
-                    Modifier.fillMaxSize().graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationY = dy
-                        rotationZ = rot
-                        alpha = 0.45f + 0.55f * p
-                    }
-                ) { content() }
+                // 注意：这里不能对整棵内容树做 scale/rotation，WebView 被变换层包裹会渲染成黑屏。
+                // 入场动画下放到各页面内部（PageMotion），WebView 本身保持零变换。
+                content()
             }
         }
     }

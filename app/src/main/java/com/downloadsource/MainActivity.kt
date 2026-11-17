@@ -204,14 +204,20 @@ fun MainScaffold() {
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 when (currentTab) {
-                    Tab.DOWNLOAD -> DownloadScreen(onOpenBrowserUrl = { url -> browserUrlToLoad = url; currentTab = Tab.BROWSER })
-                    Tab.BROWSER -> BrowserScreen(
-                        onPlayVideo = { playingUri = Uri.fromFile(it) },
-                        onPlayStream = { playingUri = Uri.parse(it) },
-                        externalUrlToLoad = browserUrlToLoad,
-                        onUrlLoaded = { browserUrlToLoad = null }
-                    )
-                    Tab.LIBRARY -> MediaLibraryScreen(onPlayVideo = { playingUri = Uri.fromFile(it) })
+                    Tab.DOWNLOAD -> PageMotion(0) {
+                        DownloadScreen(onOpenBrowserUrl = { url -> browserUrlToLoad = url; currentTab = Tab.BROWSER })
+                    }
+                    Tab.BROWSER -> PageMotion(1) {
+                        BrowserScreen(
+                            onPlayVideo = { playingUri = Uri.fromFile(it) },
+                            onPlayStream = { playingUri = Uri.parse(it) },
+                            externalUrlToLoad = browserUrlToLoad,
+                            onUrlLoaded = { browserUrlToLoad = null }
+                        )
+                    }
+                    Tab.LIBRARY -> PageMotion(2) {
+                        MediaLibraryScreen(onPlayVideo = { playingUri = Uri.fromFile(it) })
+                    }
                 }
             }
         }

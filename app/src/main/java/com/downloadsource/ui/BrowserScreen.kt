@@ -136,6 +136,8 @@ fun BrowserScreen(
     var readerMode by remember { mutableStateOf(false) }
     var forceDarkWeb by remember { mutableStateOf(false) }
     var incognito by remember { mutableStateOf(false) }
+    var imagesOn by remember { mutableStateOf(true) }
+    var thirdPartyCookies by remember { mutableStateOf(true) }
 
     var engine by remember { mutableStateOf(SearchEngine.getCurrent(ctx)) }
     var desktopMode by remember { mutableStateOf(BrowserPrefs.isDesktop(ctx)) }
@@ -176,9 +178,14 @@ fun BrowserScreen(
             settings.allowContentAccess = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.setSupportZoom(true)
+            // 默认不改写网页配色：强深色会把部分站点（如百度）整页刷黑
             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                settings.forceDark = WebSettings.FORCE_DARK_AUTO
+                settings.forceDark = WebSettings.FORCE_DARK_OFF
             }
+            // 视口与白底：未加载完时也是白页而不是黑块
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            setBackgroundColor(android.graphics.Color.WHITE)
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         }
@@ -225,6 +232,19 @@ fun BrowserScreen(
             override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
                 android.widget.Toast.makeText(ctx, "页面渲染进程被系统回收，已重建", android.widget.Toast.LENGTH_SHORT).show()
                 return true
+            }
+
+            override fun onReceivedSslError(view: WebView?, handler: android.webkit.SslErrorHandler?, error: android.net.http.SslError?) {
+                // 证书链异常的站点直接放行，避免停在空白页；安全性由用户自担
+                handler?.proceed()
+            }
+
+            override fun onReceivedHttpError(view: WebView?, request: android.webkit.WebResourceRequest?, errorResponse: android.webkit.WebResourceResponse?) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                val code = errorResponse?.statusCode ?: 0
+                if (request?.isForMainFrame == true && code >= 400) {
+                    android.widget.Toast.makeText(ctx, "页面返回 HTTP $code", android.widget.Toast.LENGTH_SHORT).show()
+                }
             }
 
             override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
@@ -807,10 +827,26 @@ fun BrowserScreen(
                         Text("网页强制深色", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                         Switch(checked = forceDarkWeb, onCheckedChange = {
                             forceDarkWeb = it
-                            webView.settings.forceDark = if (it) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_AUTO
+                            webView.settings.forceDark = if (it) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_OFF
                             webView.reload()
                         })
                     }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("无图模式（省流量）", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = !imagesOn, onCheckedChange = {
+                        imagesOn = !it
+                        webView.settings.loadsImagesAutomatically = imagesOn
+                        if (imagesOn) webView.reload()
+                    })
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("仅第一方 Cookie", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = !thirdPartyCookies, onCheckedChange = {
+                        thirdPartyCookies = !it
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, thirdPartyCookies)
+                        android.widget.Toast.makeText(ctx, if (thirdPartyCookies) "已允许第三方 Cookie" else "已阻止第三方 Cookie", android.widget.Toast.LENGTH_SHORT).show()
+                    })
                 }
                 TextButton(onClick = { showDataPanel = false }, modifier = Modifier.align(Alignment.End)) { Text("关闭") }
             }
