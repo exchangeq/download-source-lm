@@ -616,6 +616,7 @@ fun BrowserScreen(
                     readerMode = !readerMode
                     webView.evaluateJavascript(WebScripts.readerMode, null)
                 }
+                MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) }
                 MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) }
                 MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) }
                 MenuItem("数据管理", Icons.Default.Delete, palette) { showMenu = false; showDataPanel = true }
@@ -969,5 +970,21 @@ private fun exportPdf(ctx: android.content.Context, webView: WebView) {
         pm.print("LM 网页导出", adapter, android.print.PrintAttributes.Builder().build())
     } catch (e: Exception) {
         android.widget.Toast.makeText(ctx, "导出失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** 把当前网页的 outerHTML 存到下载目录，方便离线留存 */
+private fun savePageHtml(ctx: android.content.Context, webView: WebView) {
+    webView.evaluateJavascript("(function(){return document.documentElement.outerHTML})()") { value ->
+        if (value.isNullOrBlank() || value == "null") return@evaluateJavascript
+        try {
+            val html = runCatching { org.json.JSONTokener(value).nextValue() as String }.getOrDefault(value)
+            val dir = java.io.File(DirStore.resolveDownloadDir(ctx), "LM Pages").apply { mkdirs() }
+            val file = java.io.File(dir, "page_${System.currentTimeMillis()}.html")
+            file.writeText(html)
+            android.widget.Toast.makeText(ctx, "已保存：${file.name}", android.widget.Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(ctx, "保存失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 }

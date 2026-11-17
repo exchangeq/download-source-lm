@@ -19,10 +19,22 @@ data class DownloadTask(
     val error: String? = null,
     val outputPath: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    val segments: List<Float> = emptyList(),   // 每条连接各自的完成度
+    val retries: Int = 0,
 ) {
     val fraction: Float get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
     val sizeText: String get() = if (totalBytes <= 0) "--" else "${fmt(downloadedBytes)} / ${fmt(totalBytes)}"
     val speedText: String get() = if (status == TaskStatus.Running && speed > 0) "${fmt(speed)}/s" else ""
+    /** 剩余时间（秒） */
+    val etaSeconds: Long get() {
+        if (status != TaskStatus.Running || speed <= 0 || totalBytes <= downloadedBytes) return 0
+        return (totalBytes - downloadedBytes) / speed
+    }
+    val etaText: String get() {
+        val s = etaSeconds
+        if (s <= 0) return ""
+        return if (s >= 3600) "${s / 3600}h ${s % 3600 / 60}m" else if (s >= 60) "${s / 60}m ${s % 60}s" else "${s}s"
+    }
     private fun fmt(b: Long): String = when {
         b >= 1L shl 30 -> String.format("%.2f GB", b / (1.0 * (1L shl 30)))
         b >= 1L shl 20 -> String.format("%.1f MB", b / (1.0 * (1L shl 20)))

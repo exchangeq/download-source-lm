@@ -39,7 +39,7 @@ class Segmenter(private val client: OkHttpClient) {
         activeCalls.remove(taskId)?.forEach { it.cancel() }
     }
 
-    suspend fun download(taskId: String, url: String, outFile: File, parts: Int, speedLimitKb: Long, customHeaders: Map<String, String>, onTick: (Long, Long, Long) -> Unit): File = coroutineScope {
+    suspend fun download(taskId: String, url: String, outFile: File, parts: Int, speedLimitKb: Long, customHeaders: Map<String, String>, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
         val headers = okhttp3.Headers.Builder().apply { customHeaders.forEach { (k, v) -> add(k, v) } }.build()
         
         if (url.contains(".m3u8") || url.endsWith(".ts", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
@@ -72,7 +72,7 @@ class Segmenter(private val client: OkHttpClient) {
                 val now = System.currentTimeMillis(); val cur = counters.sumOf { it.get() }
                 val speed = if (now > lastTick) (cur - lastBytes) * 1000 / (now - lastTick) else 0
                 lastTick = now; lastBytes = cur
-                onTick(cur, total, speed)
+                onTick(cur, total, speed, List(n) { i -> val cs = i * total / n; val ce = if (i == n - 1) total else (i + 1) * total / n; (counters[i].get().toFloat() / (ce - cs).coerceAtLeast(1).toFloat()).coerceIn(0f, 1f) })
             }
         }
 
@@ -85,7 +85,7 @@ class Segmenter(private val client: OkHttpClient) {
                 }
             }.awaitAll()
             ticker.cancel()
-            onTick(total, total, 0)
+            onTick(total, total, 0, List(n) { 1f })
             outFile
         } catch (e: Exception) { 
             ticker.cancel()
@@ -128,7 +128,7 @@ class Segmenter(private val client: OkHttpClient) {
     }
 
     // 修复：没有大小信息时的流式下载
-    private suspend fun streamDownload(taskId: String, url: String, outFile: File, headers: okhttp3.Headers, onTick: (Long, Long, Long) -> Unit): File = coroutineScope {
+    private suspend fun streamDownload(taskId: String, url: String, outFile: File, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
         val req = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity").build()
         val call = client.newCall(req)
         activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
@@ -152,7 +152,7 @@ class Segmenter(private val client: OkHttpClient) {
                                 downloaded += r
                                 val now = System.currentTimeMillis()
                                 if (now - lastTick > 300) {
-                                    onTick(downloaded, if (total > 0) total else 0L, 0L)
+                                    onTick(downloaded, if (total > 0) total else 0L, 0L, emptyList())
                                     lastTick = now
                                 }
                             }
@@ -162,7 +162,7 @@ class Segmenter(private val client: OkHttpClient) {
                 }
             }
             if (!partFile.renameTo(outFile)) { partFile.copyTo(outFile, true); partFile.delete() }
-            onTick(outFile.length(), outFile.length(), 0L)
+            onTick(outFile.length(), outFile.length(), 0L, emptyList())
             outFile
         } finally {
             activeCalls[taskId]?.remove(call)
@@ -227,7 +227,7 @@ class Segmenter(private val client: OkHttpClient) {
         }
     }
 
-    private suspend fun downloadM3u8(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long) -> Unit): File = coroutineScope {
+    private suspend fun downloadM3u8(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
         var finalUrl = url
         if (url.endsWith(".ts", true)) finalUrl = url.substringBeforeLast("/").plus("/index.m3u8")
         val segments = parseM3u8(finalUrl, mutableSetOf(), headers)
@@ -236,7 +236,7 @@ class Segmenter(private val client: OkHttpClient) {
         val tmpDir = File(outFile.parentFile, ".${outFile.name}.ts_parts").apply { mkdirs() }
         val downloaded = AtomicLong(0)
         val total = segments.size.toLong()
-        val ticker = launch(Dispatchers.Default) { while (isActive) { delay(300); onTick(downloaded.get(), total, 0) } }
+        val ticker = launch(Dispatchers.Default) { while (isActive) { delay(300); onTick(downloaded.get(), total, 0, emptyList()) } }
 
         val semaphore = Semaphore(parts)
         segments.mapIndexed { index, segment ->
@@ -280,7 +280,7 @@ class Segmenter(private val client: OkHttpClient) {
             try { remuxTsToMp4(mergedTs, outFile); true } catch (e: Exception) { false } 
         }
         tmpDir.deleteRecursively()
-        onTick(total, total, 0)
+        onTick(total, total, 0, emptyList())
         if (!success) {
             val fallbackTs = File(outFile.parentFile, outFile.name.replace(".mp4", ".ts"))
             if (mergedTs.exists()) mergedTs.renameTo(fallbackTs)

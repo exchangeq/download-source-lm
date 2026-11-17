@@ -147,6 +147,8 @@ object MirrorResolver {
     private fun autoGithub(context: Context): Boolean =
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY_AUTO, true)
 
+    fun isAutoGithub(context: Context): Boolean = autoGithub(context)
+
     fun setAutoGithub(context: Context, value: Boolean) {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY_AUTO, value).apply()
     }

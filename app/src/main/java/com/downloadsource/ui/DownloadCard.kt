@@ -5,7 +5,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -13,6 +18,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -23,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -50,6 +57,7 @@ fun DownloadCard(
     val palette = LocalPalette.current
     val ctx = LocalContext.current
     var showSheet by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf(task.fileName) }
 
@@ -57,13 +65,17 @@ fun DownloadCard(
     val animatedSpeed by animateFloatAsState(targetValue = task.speed.toFloat(), animationSpec = tween(500), label = "speed")
 
     Box {
+      Column {
         Row(
             modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(20.dp))
                 .background(palette.surface)
                 .border(1.dp, palette.onSurface.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
                 .combinedClickable(
-                    onClick = { if (task.status == TaskStatus.Completed) onOpen() },
+                    onClick = {
+                        // 点击展开进度详情；已完成则直接打开文件
+                        if (task.status == TaskStatus.Completed) onOpen() else expanded = !expanded
+                    },
                     onLongClick = { showSheet = true }
                 )
                 .padding(horizontal = 16.dp, vertical = 16.dp),
@@ -119,6 +131,59 @@ fun DownloadCard(
             }
         }
 
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(top = 8.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(palette.surface)
+                    .padding(14.dp)
+            ) {
+                if (task.segments.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().height(8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        task.segments.take(32).forEach { f ->
+                            Box(
+                                Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(2.dp))
+                                    .background(palette.onSurface.copy(alpha = 0.12f))
+                            ) {
+                                Box(
+                                    Modifier.fillMaxWidth(f.coerceIn(0f, 1f)).fillMaxHeight()
+                                        .background(palette.primary.first())
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+                Text(
+                    buildString {
+                        append("线程 ${task.threads}")
+                        append(" · ${task.sizeText}")
+                        if (task.speedText.isNotEmpty()) append(" · ${task.speedText}")
+                        if (task.etaText.isNotEmpty()) append(" · 剩余 ${task.etaText}")
+                    },
+                    color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                SpeedSparkline(task.speed, palette.primary)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("URL", task.url))
+                        Toast.makeText(ctx, "链接已复制", Toast.LENGTH_SHORT).show()
+                    }) { Text("复制链接", style = MaterialTheme.typography.bodySmall) }
+                    if (task.status == TaskStatus.Failed) {
+                        TextButton(onClick = { DownloadManager.start(ctx, task.id) }) { Text("重试", style = MaterialTheme.typography.bodySmall) }
+                    }
+                    TextButton(onClick = onDelete) { Text("删除", color = Color.Red, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
+
         if (showSheet) {
             ModalBottomSheet(onDismissRequest = { showSheet = false }, containerColor = palette.surface) {
                 Column(Modifier.padding(16.dp)) {
@@ -136,7 +201,7 @@ fun DownloadCard(
                     SheetItem("复制下载链接", Icons.Default.ContentCopy, palette.onSurface) {
                         val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("URL", task.url))
-                        Toast.makeText(ctx, "已复制到剪贴板 (๑•̀ㅂ•́)و✧到剪贴板 (๑•̀ㅂ•́)و✧", Toast.LENGTH_SHORT).show(); showSheet = false
+                        Toast.makeText(ctx, "已复制到剪贴板", Toast.LENGTH_SHORT).show(); showSheet = false
                     }
                     SheetItem("删除", Icons.Default.Delete, Color.Red) { onDelete(); showSheet = false }
                     Spacer(Modifier.height(16.dp))
@@ -153,6 +218,7 @@ fun DownloadCard(
                 dismissButton = { TextButton(onClick = { showRenameDialog = false }) { Text("取消") } }
             )
         }
+      }
     }
 }
 
@@ -177,5 +243,27 @@ private fun ProgressRing(progress: Float, running: Boolean, completed: Boolean, 
         if (completed) drawArc(Brush.sweepGradient(colors), 0f, 360f, false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
         else if (progress > 0.01f) drawArc(Brush.sweepGradient(colors), if (running) rotation else -90f, (progress * 360f).coerceAtLeast(4f), false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
         else if (running) drawArc(colors.first(), rotation, 90f, false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
+    }
+}
+
+/** 最近 40 个采样点的速度折线 */
+@Composable
+private fun SpeedSparkline(speed: Long, colors: List<Color>) {
+    val samples = remember { mutableStateListOf<Float>() }
+    LaunchedEffect(speed) {
+        samples.add(speed.toFloat())
+        if (samples.size > 40) samples.removeAt(0)
+    }
+    val maxV = (samples.maxOrNull() ?: 1f).coerceAtLeast(1024f)
+    Canvas(Modifier.fillMaxWidth().height(44.dp)) {
+        if (samples.size < 2) return@Canvas
+        val path = Path()
+        val stepX = size.width / (samples.size - 1)
+        samples.forEachIndexed { i, v ->
+            val x = i * stepX
+            val y = size.height - (v / maxV) * size.height * 0.9f
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, colors.first(), style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
     }
 }

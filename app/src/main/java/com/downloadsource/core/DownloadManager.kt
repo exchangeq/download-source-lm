@@ -6,6 +6,7 @@ import android.os.Looper
 import com.downloadsource.BuildConfig
 import com.downloadsource.storage.DirStore
 import com.downloadsource.utils.UserAgents
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -157,16 +158,26 @@ object DownloadManager {
         val t = _tasks.value.find { it.id == id } ?: return
         if (t.status == TaskStatus.Running) return
 
+        // 空间检查：低于 100MB 直接失败提示，避免写到一半磁盘满
+        run {
+            val dir = File(t.dirPath)
+            val free = try { dir.usableSpace } catch (e: Exception) { Long.MAX_VALUE }
+            if (free in 1..(100L shl 20)) {
+                updateTaskState(context, id) { it.copy(status = TaskStatus.Failed, error = "存储空间不足（剩余 ${free / 1024 / 1024}MB）") }
+                return
+            }
+        }
+
         updateTaskState(context, id) { it.copy(status = TaskStatus.Running, error = null) }
         DownloadService.start(context)
 
         jobs[id] = scope.launch {
             try {
                 val outFile = File(t.dirPath, t.fileName)
-                val out = segmenter.download(t.id, t.url, outFile, t.threads, t.speedLimitKb, t.headers) { d, total, speed ->
+                val out = segmenter.download(t.id, t.url, outFile, t.threads, t.speedLimitKb, t.headers) { d, total, speed, segs ->
                     _tasks.update { list ->
                         list.map {
-                            if (it.id == id) it.copy(downloadedBytes = d, totalBytes = if (total > 0) total else it.totalBytes, speed = speed) else it
+                            if (it.id == id) it.copy(downloadedBytes = d, totalBytes = if (total > 0) total else it.totalBytes, speed = speed, segments = segs) else it
                         }
                     }
                     DownloadService.updateProgress(context, t.fileName, d, total, speed)
@@ -179,12 +190,22 @@ object DownloadManager {
                         context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW).apply { setDataAndType(uri, "application/vnd.android.package-archive"); addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK) })
                     } catch (e: Exception) {}
                 }
+                // 完成后清理同名残留
+                runCatching { File(t.dirPath, ".${t.fileName}.part").delete() }
+                runCatching { File(t.dirPath, ".${t.fileName}.ts_parts").deleteRecursively() }
                 checkPending(context)
             } catch (e: CancellationException) {
                 // 暂停/删除由 pause/remove 维护状态，这里不再覆盖
                 throw e
             } catch (e: Exception) {
-                updateTaskState(context, id) { it.copy(status = TaskStatus.Failed, error = e.message, speed = 0) }
+                val cur = _tasks.value.find { it.id == id }
+                if (cur != null && cur.retries < 2) {
+                    // 自动重试两次，间隔递增；重试期间保持 Pending 让队列泵接上
+                    updateTaskState(context, id) { it.copy(status = TaskStatus.Pending, error = "自动重试 ${it.retries + 1}/2：${e.message}", retries = it.retries + 1, segments = emptyList(), speed = 0) }
+                    scope.launch { delay(1500L * (cur.retries + 1)); pumpQueue(context) }
+                } else {
+                    updateTaskState(context, id) { it.copy(status = TaskStatus.Failed, error = e.message, speed = 0) }
+                }
                 checkPending(context)
             } finally {
                 jobs.remove(id)

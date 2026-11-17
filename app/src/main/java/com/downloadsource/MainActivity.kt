@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -43,10 +44,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
+import com.downloadsource.core.MirrorResolver
 import com.downloadsource.core.DownloadManager
 import com.downloadsource.core.UpdateManager
 import com.downloadsource.storage.BrowserPrefs
@@ -283,10 +287,14 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
     var dirPath by remember { mutableStateOf(DirStore.resolveDownloadDir(ctx).absolutePath) }
     var searchQuery by remember { mutableStateOf("") }
     var filterMode by remember { mutableStateOf("全部") }
-    val filters = listOf("全部", "下载中", "已完成", "失败")
+    var sortMode by remember { mutableStateOf("最新") }
+    var showBulk by remember { mutableStateOf(false) }
+    val filters = listOf("全部", "下载中", "排队中", "已完成", "失败")
     
     var isSelectionMode by remember { mutableStateOf(false) }
     val selectedTasks = remember { mutableStateListOf<String>() }
+    val scope = rememberCoroutineScope()
+    var autoMirror by remember { mutableStateOf(true) }
 
     val shortcuts = listOf(
         Pair("哔哩哔哩", "https://m.bilibili.com"),
@@ -339,6 +347,7 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
                 } else {
                     if (tasks.isNotEmpty()) IconButton(onClick = { isSelectionMode = true }) { Icon(Icons.Default.Checklist, "多选", tint = palette.onSurface) }
                     IconButton(onClick = { ctx.startActivity(Intent(ctx, NetDiskActivity::class.java)) }) { Icon(Icons.Default.Cloud, "网盘", tint = palette.primary.first()) }
+                    if (tasks.isNotEmpty()) IconButton(onClick = { showBulk = true }) { Icon(Icons.Default.MoreVert, "批量与排序", tint = palette.onSurface) }
                     IconButton(onClick = { ctx.startActivity(Intent(ctx, SettingsActivity::class.java)) }) { Icon(Icons.Default.Settings, "设置", tint = palette.onSurface) }
                 }
             }
@@ -391,17 +400,24 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
             val filteredTasks = tasks.filter { 
                 when(filterMode) {
                     "下载中" -> it.status == com.downloadsource.core.TaskStatus.Running
+                    "排队中" -> it.status == com.downloadsource.core.TaskStatus.Pending
                     "已完成" -> it.status == com.downloadsource.core.TaskStatus.Completed
                     "失败" -> it.status == com.downloadsource.core.TaskStatus.Failed
                     else -> true
                 }
             }
 
+            val sortedTasks = when (sortMode) {
+                "大小" -> filteredTasks.sortedByDescending { it.totalBytes }
+                "进度" -> filteredTasks.sortedByDescending { it.fraction }
+                else -> filteredTasks.sortedByDescending { it.createdAt }
+            }
+
             if (filteredTasks.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("暂无任务呢，雑魚 (￣▽￣)~*", color = palette.onSurfaceDim) }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 80.dp)) {
-                    items(filteredTasks, key = { it.id }) { task ->
+                    items(sortedTasks, key = { it.id }) { task ->
                         if (isSelectionMode) {
                             Row(Modifier.fillMaxWidth().clickable {
                                 if (selectedTasks.contains(task.id)) selectedTasks.remove(task.id) else selectedTasks.add(task.id)
@@ -432,6 +448,48 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
                 containerColor = palette.primary.first(),
                 shape = CircleShape
             ) { Text("+", style = MaterialTheme.typography.headlineMedium, color = Color.White) }
+        }
+    }
+
+    if (showBulk) {
+        Dialog(onDismissRequest = { showBulk = false }) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(palette.surface).padding(16.dp)) {
+                Text("批量操作与排序", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                Spacer(Modifier.height(8.dp))
+                listOf("最新", "大小", "进度").forEach { mode ->
+                    Row(Modifier.fillMaxWidth().clickable { sortMode = mode }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("排序：$mode", color = if (sortMode == mode) palette.primary.first() else palette.onSurface, modifier = Modifier.weight(1f))
+                        if (sortMode == mode) Text("当前", color = palette.primary.first(), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("GitHub 自动加速", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = MirrorResolver.isAutoGithub(ctx), onCheckedChange = {
+                        MirrorResolver.setAutoGithub(ctx, it)
+                        autoMirror = it
+                    })
+                }
+                Row(Modifier.fillMaxWidth()) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            val ok = MirrorResolver.healthCheck(ctx, DownloadManager.httpClient)
+                            android.widget.Toast.makeText(ctx, "可用节点：$ok", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }) { Text("镜像测速") }
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    TextButton(onClick = { tasks.forEach { DownloadManager.pause(ctx, it.id) }; showBulk = false }) { Text("全部暂停") }
+                    TextButton(onClick = { tasks.filter { it.status != com.downloadsource.core.TaskStatus.Completed }.forEach { DownloadManager.start(ctx, it.id) }; showBulk = false }) { Text("全部继续") }
+                }
+                Row(Modifier.fillMaxWidth()) {
+                    TextButton(onClick = {
+                        tasks.filter { it.status == com.downloadsource.core.TaskStatus.Completed }.forEach { DownloadManager.remove(ctx, it.id) }
+                        showBulk = false
+                    }) { Text("清除已完成", color = Color.Red) }
+                    TextButton(onClick = { showBulk = false }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("关闭") }
+                }
+            }
         }
     }
 
