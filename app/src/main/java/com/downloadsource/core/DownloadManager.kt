@@ -76,7 +76,7 @@ object DownloadManager {
                 runCatching { "https://" + java.net.URI(url).host + "/" }.getOrNull()?.let { put("Referer", it) }
             }
         }
-        val task = DownloadTask(url = url, fileName = tempName, dirPath = baseDir.absolutePath, threads = threads.coerceIn(1, 32), speedLimitKb = speedLimitKb, headers = finalHeaders)
+        val task = DownloadTask(url = url, fileName = tempName, dirPath = baseDir.absolutePath, threads = threads.coerceIn(1, 64), speedLimitKb = speedLimitKb, headers = finalHeaders)
 
         scope.launch {
             _tasks.update { it + task }
@@ -117,8 +117,10 @@ object DownloadManager {
                         if (ext == "m3u8" || ext == "mpd") n.substringBeforeLast('.') + ".mp4" else n
                     }
                 val catDir = createCategoryDir(baseDir, realName)
+                // 同名冲突：磁盘已存在 + 队列里同目录同名任务，都要算进去，避免两个任务抢一个文件名
+                val taken = _tasks.value.filter { it.dirPath == catDir.absolutePath && it.id != task.id }.map { it.fileName }
                 updateTaskState(context, task.id) {
-                    it.copy(url = parsedUrl, fileName = uniqueName(catDir, realName), dirPath = catDir.absolutePath)
+                    it.copy(url = parsedUrl, fileName = uniqueName(catDir, realName, taken), dirPath = catDir.absolutePath)
                 }
                 startTask(context, task.id)
             } catch (e: Exception) {
@@ -206,15 +208,15 @@ object DownloadManager {
     }.getOrDefault(false)
 
     /** 同名文件自动加序号，避免覆盖已有文件 */
-    private fun uniqueName(dir: File, name: String): String {
+    private fun uniqueName(dir: File, name: String, taken: Collection<String> = emptyList()): String {
         val f = File(dir, name)
-        if (!f.exists()) return name
+        if (!f.exists() && taken.none { it.equals(name, true) }) return name
         val base = name.substringBeforeLast('.', name)
         val ext = name.substringAfterLast('.', "")
         var i = 1
         while (true) {
             val candidate = if (ext.isEmpty()) "$base ($i)" else "$base ($i).$ext"
-            if (!File(dir, candidate).exists()) return candidate
+            if (!File(dir, candidate).exists() && taken.none { it.equals(candidate, true) }) return candidate
             i++
         }
     }
@@ -311,25 +313,58 @@ object DownloadManager {
 
     fun moveToVault(context: Context, id: String) {
         val t = _tasks.value.find { it.id == id } ?: return
-        val srcFile = File(t.outputPath ?: return)
-        if (srcFile.exists()) {
-            val vaultDir = File(DirStore.resolveDownloadDir(context), ".vault")
-            if (!vaultDir.exists()) vaultDir.mkdirs()
-            val destFile = File(vaultDir, t.fileName)
-            if (srcFile.renameTo(destFile)) {
-                _tasks.update { list -> list.filterNot { it.id == id } }
-                TaskStore.save(context, _tasks.value)
-                Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "已移入私密目录", android.widget.Toast.LENGTH_SHORT).show() }
-            }
+        // outputPath 可能为空（旧任务/改名后），退回按目录+文件名定位，避免"点了没反应/文件消失"
+        val srcFile = File(t.outputPath?.takeIf { it.isNotBlank() } ?: File(t.dirPath, t.fileName).absolutePath)
+        if (!srcFile.exists()) {
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "源文件不存在：${srcFile.name}", android.widget.Toast.LENGTH_SHORT).show() }
+            return
+        }
+        val vaultDir = DirStore.vaultDir(context)
+        val destFile = File(vaultDir, uniqueName(vaultDir, t.fileName))
+        // renameTo 在跨卷/部分 ROM 上会失败，失败改走复制+删除，绝不让文件丢在半路
+        val moved = srcFile.renameTo(destFile) || runCatching {
+            srcFile.copyTo(destFile, overwrite = false)
+            srcFile.delete()
+            destFile.exists() && destFile.length() > 0
+        }.getOrDefault(false)
+        if (moved) {
+            _tasks.update { list -> list.filterNot { it.id == id } }
+            TaskStore.save(context, _tasks.value)
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "已移入私密保险箱", android.widget.Toast.LENGTH_SHORT).show() }
+        } else {
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "移入失败，请检查存储权限", android.widget.Toast.LENGTH_SHORT).show() }
         }
     }
 
     fun rename(context: Context, id: String, newName: String) {
         val t = _tasks.value.find { it.id == id } ?: return
-        val safe = sanitizeFileName(newName)
-        val dir = File(t.dirPath); val oldFile = File(dir, t.fileName); val newFile = File(dir, safe)
-        if (oldFile.exists()) oldFile.renameTo(newFile)
-        updateTaskState(context, id) { it.copy(fileName = safe, outputPath = newFile.absolutePath) }
+        val raw = newName.trim()
+        if (raw.isEmpty()) {
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "文件名不能为空", android.widget.Toast.LENGTH_SHORT).show() }
+            return
+        }
+        val dir = File(t.dirPath.ifBlank { DirStore.resolveDownloadDir(context).absolutePath })
+        // 以真实落盘文件为准：改名/魔数纠正后 outputPath 才是准的
+        val src = File(t.outputPath?.takeIf { it.isNotBlank() } ?: File(dir, t.fileName).absolutePath)
+        var safe = sanitizeFileName(raw)
+        // 省略扩展名时自动沿用原文件后缀，避免变成无后缀文件打不开
+        val srcExt = src.name.substringAfterLast('.', "")
+        if (safe.substringAfterLast('.', "").isEmpty() && srcExt.isNotEmpty()) safe = "$safe.$srcExt"
+        var dest = File(dir, safe)
+        // 同名不覆盖：自动加 (1)(2)
+        if (dest.exists() && dest.absolutePath != src.absolutePath) dest = File(dir, uniqueName(dir, safe))
+        val moved = when {
+            !src.exists() -> false
+            src.absolutePath == dest.absolutePath -> true
+            src.renameTo(dest) -> true
+            else -> runCatching { src.copyTo(dest, overwrite = false); src.delete(); dest.length() > 0 }.getOrDefault(false)
+        }
+        if (moved) {
+            updateTaskState(context, id) { it.copy(fileName = dest.name, outputPath = dest.absolutePath) }
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "已重命名为 ${dest.name}", android.widget.Toast.LENGTH_SHORT).show() }
+        } else {
+            Handler(Looper.getMainLooper()).post { android.widget.Toast.makeText(context, "重命名失败：源文件不可写", android.widget.Toast.LENGTH_SHORT).show() }
+        }
     }
 
     fun autoResumeTasks(context: Context) {

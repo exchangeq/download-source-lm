@@ -29,6 +29,13 @@ object DirStore {
         return defaultDir(context)
     }
 
+    /** 保险箱目录：全项目统一入口，避免移动端和列表端拿不同路径导致「移进去看不见」 */
+    fun vaultDir(context: Context): File {
+        val dir = File(resolveDownloadDir(context), ".vault")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
     // 修复：直接使用 App 的公共下载目录，彻底解决 Android 10+ 权限问题
     fun defaultDir(context: Context): File {
         val publicDownload = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)

@@ -18,6 +18,15 @@ class WebInterceptor {
         _sniffedData.tryEmit(SniffedMedia(url, mime, url.startsWith("blob:")))
     }
 
+    /** 播放器上报时长（毫秒字符串，避免 JS number 类型转换问题） */
+    @JavascriptInterface
+    fun onMediaMeta(url: String?, durationMs: String?) {
+        val u = url ?: return
+        val d = durationMs?.toLongOrNull() ?: return
+        com.downloadsource.core.MediaProbe.rememberDuration(u, d)
+        _sniffedData.tryEmit(SniffedMedia(u, "video/*", u.startsWith("blob:")))
+    }
+
     @JavascriptInterface
     fun onBlobFound(base64Data: String, mime: String) {
         if (base64Data.isBlank()) return
@@ -30,7 +39,7 @@ class WebInterceptor {
         (function() {
             if (window.__lmSniffInstalled) return;
             window.__lmSniffInstalled = true;
-            var EXT = /(\.mp4|\.m4v|\.mkv|\.webm|\.mov|\.flv|\.avi|\.wmv|\.ogv|\.3gp|\.m3u8|\.mpd|\.ts|\.mp3|\.m4a|\.aac|\.flac|\.wav|\.ogg|\.opus|\.wma|\.ape|\.zip|\.rar|\.7z|\.tar|\.gz|\.xz|\.bz2|\.zst|\.apk|\.xapk|\.apks|\.ipa|\.pdf|\.epub|\.mobi|\.docx?|\.xlsx?|\.pptx?|\.csv|\.torrent|\.iso|\.dmg|\.exe|\.msi)(\?|#|$)/i;
+            var EXT = /(\.mp4|\.m4v|\.mkv|\.webm|\.mov|\.flv|\.avi|\.wmv|\.ogv|\.3gp|\.m2ts|\.mts|\.vob|\.rmvb|\.rm|\.asf|\.f4v|\.m3u8|\.mpd|\.ts|\.mp3|\.m4a|\.m4b|\.aac|\.flac|\.wav|\.ogg|\.opus|\.wma|\.ape|\.ac3|\.amr|\.mka|\.tta|\.zip|\.rar|\.7z|\.tar|\.gz|\.xz|\.bz2|\.zst|\.lz4|\.cab|\.apk|\.xapk|\.apks|\.apkm|\.ipa|\.pdf|\.epub|\.mobi|\.azw3?|\.docx?|\.xlsx?|\.pptx?|\.csv|\.rtf|\.torrent|\.iso|\.img|\.dmg|\.exe|\.msi|\.deb|\.rpm|\.crx|\.bin)(\?|#|$)/i;
             var seen = {};
             function report(u, mime) {
                 if (!u || typeof u !== 'string') return;
@@ -74,14 +83,59 @@ class WebInterceptor {
                     }).catch(function() {});
                 } catch (e) {}
             }
+            // 一边播放一边上报：play / loadedmetadata / seeking 全部挂钩，
+            // 很多站点的真实地址是无扩展名的接口，只靠正则永远抓不到，必须靠播放事件。
+            function fire(el) {
+                try {
+                    var src = el.currentSrc || el.src || '';
+                    if (!src) return;
+                    if (src.indexOf('blob:') === 0) reportBlob(src);
+                    else report(src, 'video/mp4');
+                    var len = el.duration;
+                    if (len && isFinite(len)) {
+                        try { window.AndroidBridge.onMediaMeta(src, String(Math.round(len * 1000))); } catch (e) {}
+                    }
+                } catch (e) {}
+            }
+            function hookOne(el) {
+                if (!el || el.__lmHooked) return;
+                el.__lmHooked = 1;
+                ['loadedmetadata', 'play', 'playing', 'seeking', 'durationchange', 'emptied', 'ended'].forEach(function(ev) {
+                    el.addEventListener(ev, function() { fire(el); }, true);
+                });
+                fire(el);
+            }
             function scanMedia() {
                 var els = document.querySelectorAll('video,audio,source,track');
                 for (var i = 0; i < els.length; i++) {
                     var src = els[i].currentSrc || els[i].src;
                     if (!src) continue;
-                    if (src.indexOf('blob:') === 0) reportBlob(src); else report(src);
+                    if (src.indexOf('blob:') === 0) reportBlob(src); else report(src, 'video/mp4');
+                    if (els[i].tagName === 'VIDEO' || els[i].tagName === 'AUDIO') hookOne(els[i]);
                 }
             }
+            // 页面中途插入的视频（懒加载 / 切换剧集）也要第一时间抓到
+            try {
+                document.addEventListener('play', function(ev) {
+                    var t = ev.target;
+                    if (t && (t.tagName === 'VIDEO' || t.tagName === 'AUDIO')) { hookOne(t); fire(t); }
+                }, true);
+                var mo = new MutationObserver(function(muts) {
+                    for (var i = 0; i < muts.length; i++) {
+                        var added = muts[i].addedNodes || [];
+                        for (var j = 0; j < added.length; j++) {
+                            var n = added[j];
+                            if (!n || n.nodeType !== 1) continue;
+                            if (n.tagName === 'VIDEO' || n.tagName === 'AUDIO') hookOne(n);
+                            if (n.querySelectorAll) {
+                                var vs = n.querySelectorAll('video,audio');
+                                for (var k = 0; k < vs.length; k++) hookOne(vs[k]);
+                            }
+                        }
+                    }
+                });
+                mo.observe(document.documentElement, { childList: true, subtree: true });
+            } catch (e) {}
             // 中英文双语链接扫描：下载/播放/高清 与 download/play/stream
             var KEYWORDS = /(下载|下载链接|立即下载|免费下载|播放|在线观看|高清|蓝光|音轨|字幕|视频|音频|附件|磁力|网盘|资源|download|Download|DOWNLOAD|play|Play|stream|Stream|video|Video|audio|Audio|media|Media|file|File|attachment|Attachment|episode|Episode|track|Track|save|Save)/;
             function scanLinks() {
@@ -93,6 +147,19 @@ class WebInterceptor {
                         if (!KEYWORDS.test(label)) continue;
                         var href = el.href || el.getAttribute('data-href') || el.getAttribute('data-url') || el.getAttribute('data-src');
                         if (href) report(href);
+                    }
+                } catch (e) {}
+            }
+            // 通用属性扫描：很多站点把真实地址放在 data-* / srcset / poster 上
+            function scanAttrs() {
+                try {
+                    var els = document.querySelectorAll('[data-src],[data-url],[data-href],[data-video],[data-file],[data-play],[data-stream],[data-mp4],[data-m3u8],[data-download],[poster]');
+                    for (var i = 0; i < els.length && i < 600; i++) {
+                        var el = els[i];
+                        ['data-src','data-url','data-href','data-video','data-file','data-play','data-stream','data-mp4','data-m3u8','data-download','poster','src'].forEach(function(a){
+                            var v = el.getAttribute && el.getAttribute(a);
+                            if (v && v.length > 6) report(v);
+                        });
                     }
                 } catch (e) {}
             }
@@ -123,16 +190,16 @@ class WebInterceptor {
             }
             var lastScan = 0;
             function scanText() {
-                if (Date.now() - lastScan < 3000) return;
+                if (Date.now() - lastScan < 1200) return;
                 lastScan = Date.now();
                 try {
                     var txt = document.documentElement.innerHTML || '';
-                    var re = /https?:\/\/[^\s"'<>\\]+?\.(mp4|m4v|m3u8|mpd|mp3|m4a|aac|flac|wav|ogg|mkv|webm|flv|mov|ts|zip|rar|7z|apk|xapk|ipa|pdf|epub)(?:[^\s"'<>\\]*)/gi;
+                    var re = /https?:\/\/[^\s"'<>\\]+?\.(mp4|m4v|mkv|webm|mov|flv|avi|m3u8|mpd|ts|mp3|m4a|aac|flac|wav|ogg|opus|zip|rar|7z|tar|gz|apk|xapk|apks|ipa|pdf|epub|mobi|docx|doc|xlsx|xls|pptx|ppt|torrent|iso|img|exe|msi)(?:[^\s"'<>\\]*)/gi;
                     var m, count = 0;
                     while ((m = re.exec(txt)) !== null && count < 80) { report(m[0]); count++; }
                 } catch (e) {}
             }
-            setInterval(function() { try { scanMedia(); scanText(); scanLinks(); scanMeta(); } catch (e) {} }, 1500);
+            setInterval(function() { try { scanMedia(); scanText(); scanLinks(); scanAttrs(); scanMeta(); } catch (e) {} }, 1500);
             setInterval(function() {
                 try {
                     var list = performance.getEntriesByType('resource');

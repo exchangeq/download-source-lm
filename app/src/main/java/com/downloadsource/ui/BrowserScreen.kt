@@ -1,5 +1,7 @@
 package com.downloadsource.ui
 
+import kotlinx.coroutines.launch
+
 import com.downloadsource.storage.RenderCompatStore
 
 import android.annotation.SuppressLint
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -48,6 +51,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -68,6 +72,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -167,6 +172,11 @@ fun BrowserScreen(
     var browserUi by remember { mutableIntStateOf(BrowserPrefs.getBrowserUi(ctx)) }
     var showEnginePicker by remember { mutableStateOf(false) }
     val sniffedUrls = remember { mutableStateListOf<WebInterceptor.SniffedMedia>() }
+    val probeMap = remember { mutableStateMapOf<String, com.downloadsource.core.MediaProbe.Info>() }
+    var previewUrl by remember { mutableStateOf<String?>(null) }
+    var pendingCustomName by remember { mutableStateOf("") }
+    var renamingUrl by remember { mutableStateOf<String?>(null) }
+    var renameDraft by remember { mutableStateOf("") }
     val webInterceptor = remember { WebInterceptor() }
     val currentTab = { tabs.firstOrNull { it.id == activeId } }
 
@@ -853,6 +863,11 @@ fun BrowserScreen(
     }
 
     if (showSniffList) {
+        LaunchedEffect(showSniffList) {
+            sniffedUrls.filter { sniffKind(it.url) == "视频" && !it.isBlob }.take(8).forEach { media ->
+                launch { probeMap[media.url] = com.downloadsource.core.MediaProbe.probe(media.url) }
+            }
+        }
         Dialog(onDismissRequest = { showSniffList = false }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 500.dp).clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -892,20 +907,134 @@ fun BrowserScreen(
                             Text("$kind · ${list.size}", color = palette.onSurfaceDim, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
                         }
                         items(sorted) { media ->
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                            pendingDownloadUrl = media.url; showDownloadDialog = true; showSniffList = false
-                        }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Layers, null, tint = palette.primary.first())
-                            Spacer(Modifier.width(12.dp))
-                            Text(if (media.isBlob) "加密/动态流 (Blob)" else media.url, maxLines = 1, overflow = TextOverflow.Ellipsis, color = palette.onSurface, modifier = Modifier.weight(1f))
-                            TextButton(onClick = {
-                                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                cm.setPrimaryClip(android.content.ClipData.newPlainText("url", media.url))
-                                android.widget.Toast.makeText(ctx, "已复制链接", android.widget.Toast.LENGTH_SHORT).show()
-                            }) { Text("复制") }
-                        }
+                            val info = probeMap[media.url] ?: com.downloadsource.core.MediaProbe.cached(media.url)
+                            val kind = sniffKind(media.url)
+                            val sizeText = info?.let { com.downloadsource.core.MediaProbe.formatSize(it.size) }?.takeIf { it.isNotBlank() }
+                            val durText = info?.let { com.downloadsource.core.MediaProbe.formatDuration(it.durationMs) }?.takeIf { it.isNotBlank() }
+                            val q = qualityScore(media.url)
+                            val qLabel = when {
+                                q >= 2000 -> "4K"
+                                q >= 1200 -> "2K"
+                                q >= 900 -> "1080P"
+                                q >= 650 -> "720P"
+                                q >= 500 -> "540P"
+                                q > 0 -> "${q}P"
+                                else -> null
+                            }
+                            Column(
+                                Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(14.dp))
+                                    .background(palette.surface.copy(alpha = 0.92f)).padding(10.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        Modifier.width(104.dp).height(64.dp).clip(RoundedCornerShape(10.dp))
+                                            .background(Brush.linearGradient(listOf(palette.primary.first().copy(alpha = 0.85f), palette.primary.last().copy(alpha = 0.7f))))
+                                    ) {
+                                        Icon(
+                                            if (kind == "视频") Icons.Default.PlayArrow else Icons.Default.Layers,
+                                            null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(26.dp)
+                                        )
+                                        if (durText != null) Text(
+                                            durText, color = Color.White, style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier.align(Alignment.BottomStart).padding(4.dp)
+                                                .clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (qLabel != null) {
+                                                Text(qLabel, color = palette.primary.first(), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                                Spacer(Modifier.width(6.dp))
+                                            }
+                                            Text(
+                                                if (media.isBlob) "加密/动态流" else media.url.substringAfterLast('/').ifBlank { kind },
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis, color = palette.onSurface, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            listOfNotNull(if (media.isBlob) "Blob" else kind, sizeText, durText?.let { "时长 $it" }).joinToString(" · ").ifBlank { "读取信息中…" },
+                                            color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    val downloadMod = Modifier.size(36.dp).clip(CircleShape).background(palette.primary.first())
+                                        .clickable {
+                                            pendingCustomName = ""
+                                            pendingDownloadUrl = media.url
+                                            showDownloadDialog = true
+                                            showSniffList = false
+                                        }
+                                    Box(
+                                        downloadMod, contentAlignment = Alignment.Center
+                                    ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "下载", tint = Color.White, modifier = Modifier.size(18.dp)) }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (kind == "视频" && !media.isBlob) TextButton(onClick = { previewUrl = media.url }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) { Text("预览", style = MaterialTheme.typography.labelMedium) }
+                                    TextButton(onClick = {
+                                        renamingUrl = media.url
+                                        renameDraft = media.url.substringAfterLast('/').substringBefore('?').ifBlank { "video_${System.currentTimeMillis()}" }
+                                    }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) { Text("重命名", style = MaterialTheme.typography.labelMedium) }
+                                    TextButton(onClick = {
+                                        val cm2 = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        cm2.setPrimaryClip(android.content.ClipData.newPlainText("url", media.url))
+                                        android.widget.Toast.makeText(ctx, "已复制链接", android.widget.Toast.LENGTH_SHORT).show()
+                                    }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) { Text("复制", style = MaterialTheme.typography.labelMedium) }
+                                }
+                                if (renamingUrl == media.url) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                                        BasicTextField(
+                                            value = renameDraft,
+                                            onValueChange = { renameDraft = it },
+                                            singleLine = true,
+                                            textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodySmall.fontSize),
+                                            cursorBrush = SolidColor(palette.primary.first()),
+                                            modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(palette.background.first().copy(alpha = 0.5f)).padding(10.dp)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        TextButton(onClick = { renamingUrl = null }) { Text("取消", style = MaterialTheme.typography.labelMedium) }
+                                        TextButton(onClick = {
+                                            val nm = renameDraft.trim()
+                                            renamingUrl = null
+                                            pendingCustomName = nm
+                                            pendingDownloadUrl = media.url
+                                            showDownloadDialog = true; showSniffList = false
+                                        }) { Text("下载", style = MaterialTheme.typography.labelMedium) }
+                                    }
+                                }
+                            }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    previewUrl?.let { purl ->
+        Dialog(onDismissRequest = { previewUrl = null }) {
+            val previewPlayer = remember(purl) {
+                androidx.media3.exoplayer.ExoPlayer.Builder(ctx).build().apply {
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(purl))
+                    prepare()
+                    playWhenReady = true
+                }
+            }
+            DisposableEffect(purl) { onDispose { previewPlayer.release() } }
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(12.dp)) {
+                Box(Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
+                    androidx.compose.ui.viewinterop.AndroidView(
+                        factory = { c -> androidx.media3.ui.PlayerView(c).apply { player = previewPlayer; useController = true } },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { previewUrl = null }) { Text("关闭") }
+                    TextButton(onClick = {
+                        previewUrl = null
+                        pendingDownloadUrl = purl
+                        showDownloadDialog = true
+                        showSniffList = false
+                    }) { Text("下载") }
                 }
             }
         }
@@ -1045,7 +1174,7 @@ fun BrowserScreen(
     }
 
     if (showDownloadDialog) {
-        AddTaskDialog(initialUrl = pendingDownloadUrl, onDismiss = { showDownloadDialog = false }) { url, name, threads, speed, headers ->
+        AddTaskDialog(initialUrl = pendingDownloadUrl, initialName = pendingCustomName, onDismiss = { showDownloadDialog = false; pendingCustomName = "" }) { url, name, threads, speed, headers ->
             DownloadManager.add(ctx, url, name, threads, speed, headers, DirStore.resolveDownloadDir(ctx))
             showDownloadDialog = false
         }

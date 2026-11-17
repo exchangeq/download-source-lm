@@ -42,6 +42,12 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.filled.Backspace
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Dialog
@@ -148,30 +154,126 @@ fun SecureLockScreen(onUnlock: () -> Unit) {
     val palette = LocalPalette.current
     var inputPwd by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf("") }
-    val keys = listOf("1","2","3","4","5","6","7","8","9","Q","W","E","R","T","Y","U","I","O","P","A","S","D","F","G","H","J","K","L","Z","X","C","V","B","N","M","0","DEL")
-    
-    Column(Modifier.fillMaxSize().background(palette.background.first()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Icon(Icons.Default.Lock, null, modifier = Modifier.size(64.dp), tint = palette.primary.first())
-        Text("安全验证 (●'◡'●)", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = palette.onSurface)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(vertical = 24.dp)) { 
-            repeat(inputPwd.length.coerceAtMost(8)) { Box(Modifier.size(16.dp).clip(CircleShape).background(palette.primary.first())) } 
+    var useText by remember { mutableStateOf(false) }
+    val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "DEL")
+    val shake = remember { androidx.compose.animation.core.Animatable(0f) }
+    val pwdLen = remember { ThemeStore.getLockPassword(ctx)?.length ?: 0 }
+
+    fun submit() {
+        if (ThemeStore.verifyLockPassword(ctx, inputPwd)) {
+            onUnlock()
+        } else {
+            errorMsg = "密码错误，请重试"
+            inputPwd = ""
         }
-        Text(errorMsg, color = Color.Red, fontSize = 14.sp)
-        LazyVerticalGrid(columns = GridCells.Fixed(6), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().height(300.dp)) {
-            items(keys) { key ->
-                Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp)).background(palette.surface).clickable {
-                    errorMsg = ""
-                    if (key == "DEL") { if (inputPwd.isNotEmpty()) inputPwd = inputPwd.dropLast(1) } else { if (inputPwd.length < 8) inputPwd += key }
-                    if (inputPwd.length >= 4) { 
-                        if (ThemeStore.verifyLockPassword(ctx, inputPwd)) onUnlock() 
-                        else if (inputPwd.length == 8) { 
-                            errorMsg = "密码错误，雑魚~ (￣ε(#￣)"; inputPwd = "" 
-                        } 
+    }
+
+    LaunchedEffect(errorMsg) {
+        if (errorMsg.isNotEmpty()) {
+            repeat(2) {
+                shake.animateTo(-10f, androidx.compose.animation.core.tween(90))
+                shake.animateTo(10f, androidx.compose.animation.core.tween(90))
+            }
+            shake.animateTo(0f, androidx.compose.animation.core.tween(90))
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(palette.background))) {
+        // 背景光斑
+        Box(Modifier.size(320.dp).offset(x = (-90).dp, y = (-60).dp).clip(CircleShape)
+            .background(Brush.radialGradient(listOf(palette.primary.first().copy(alpha = 0.35f), Color.Transparent))))
+        Box(Modifier.size(280.dp).align(Alignment.BottomEnd).offset(x = 90.dp, y = 80.dp).clip(CircleShape)
+            .background(Brush.radialGradient(listOf(palette.primary.last().copy(alpha = 0.28f), Color.Transparent))))
+
+        Column(
+            Modifier.align(Alignment.Center).padding(horizontal = 24.dp)
+                .offset { IntOffset(shake.value.dp.roundToPx(), 0) }
+                .fillMaxWidth().clip(RoundedCornerShape(28.dp))
+                .background(palette.surface.copy(alpha = 0.86f))
+                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(28.dp))
+                .padding(horizontal = 22.dp, vertical = 26.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(palette.primary)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Lock, null, modifier = Modifier.size(30.dp), tint = Color.White)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("应用已锁定", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = palette.onSurface)
+            Text(if (useText) "请输入密码" else "输入密码解锁 LM", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(18.dp))
+
+            if (useText) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(palette.background.first().copy(alpha = 0.5f)).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(
+                        value = inputPwd,
+                        onValueChange = { if (it.length <= 32) { inputPwd = it; errorMsg = "" } },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(color = palette.onSurface, fontSize = 18.sp),
+                        cursorBrush = SolidColor(palette.primary.first()),
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { submit() }) { Icon(Icons.Default.ArrowForward, "解锁", tint = palette.primary.first()) }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    repeat(6) { idx ->
+                        val filled = idx < inputPwd.length
+                        Box(
+                            Modifier.size(if (filled) 14.dp else 11.dp).clip(CircleShape)
+                                .background(if (filled) palette.primary.first() else palette.onSurfaceDim.copy(alpha = 0.3f))
+                        )
                     }
-                }, contentAlignment = Alignment.Center) { 
-                    if (key == "DEL") Icon(Icons.Default.Backspace, null, tint = palette.onSurface) else Text(key, fontSize = 20.sp, color = palette.onSurface) 
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            Text(errorMsg, color = if (errorMsg.isEmpty()) Color.Transparent else Color(0xFFE53935), fontSize = 13.sp)
+
+            if (!useText) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
+                    keys.chunked(3).forEach { rowKeys ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            rowKeys.forEach { key ->
+                                Box(
+                                    Modifier.size(68.dp).clip(CircleShape)
+                                        .background(if (key.isEmpty()) Color.Transparent else palette.background.first().copy(alpha = 0.45f))
+                                        .border(if (key.isEmpty()) 0.dp else 1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                                        .then(if (key.isEmpty()) Modifier else Modifier.clickable {
+                                            errorMsg = ""
+                                            when {
+                                                key == "DEL" -> if (inputPwd.isNotEmpty()) inputPwd = inputPwd.dropLast(1)
+                                                inputPwd.length < 32 -> {
+                                                    inputPwd += key
+                                                    // 位数达到真实密码长度时自动校验，少按一次
+                                                    if (pwdLen in 1..12 && inputPwd.length >= pwdLen) submit()
+                                                }
+                                            }
+                                        }),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    when {
+                                        key == "DEL" -> Icon(Icons.Default.Backspace, "删除", tint = palette.onSurface)
+                                        key.isEmpty() -> Unit
+                                        else -> Text(key, fontSize = 23.sp, fontWeight = FontWeight.Medium, color = palette.onSurface)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = { submit() },
+                    modifier = Modifier.fillMaxWidth(0.62f).height(50.dp),
+                    shape = RoundedCornerShape(25.dp)
+                ) { Text("解锁") }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                if (useText) "改用数字键盘" else "密码含字母？改用文字输入",
+                color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.clickable { useText = !useText; inputPwd = ""; errorMsg = "" }.padding(8.dp)
+            )
         }
     }
 }
