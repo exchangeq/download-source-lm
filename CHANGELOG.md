@@ -229,3 +229,29 @@
 - 扩展名规则从 16 种扩到 40 种，含 HLS/DASH
 - 新增中英文双语链接扫描：命中「下载/播放/高清/附件」与 download/play/stream/file 的链接一并嗅探
 - `Content-Type: application/vnd.apple.mpegurl` / `dash+xml` 直接识别为可下流
+
+## v7.6.0-lm
+
+### M3U8 全面修复
+
+- 主播放列表按 BANDWIDTH 选最高画质（原来抓第一条，常拿到最低清）
+- 支持 `EXT-X-MAP` 初始化段（fMP4 的 HLS 现在能正常合成）
+- 支持 `EXT-X-BYTERANGE` 分段区间
+- AES-128 密钥按 URI 缓存，IV 缺省时按 media sequence 正确推导（原来位移写错）
+- 相对路径用 URI.resolve 统一解析，嵌套 m3u8 递归展开
+- MP4 封装失败不再报错：自动保留 `.ts` 并作为成功交付
+- 直接给 `.ts` 链接不再被误判成清单
+
+### 文件名与后缀
+
+- m3u8/mpd 播放入口自动命名为 `.mp4`（原来会把 mp4 内容存成 `.m3u8`）
+- 下载完成按文件头魔数纠正后缀：PDF/ZIP/APK/RAR/7Z/GZ/XZ/MP3/FLAC/OGG/PNG/JPG/MKV/MP4/M4A/MOV 全识别
+- ZIP 家族智能区分：命中 `AndroidManifest.xml` 才判 APK，EPUB/DOCX/XLSX/PPTX/AAB 不被误改
+- 服务器给错后缀或没给后缀时，落地文件名自动修正
+
+### 资源嗅探（中英双语极致版）
+
+- 关键词扩到中英 40+：下载/立即下载/免费下载/在线观看/高清/蓝光/音轨/字幕/磁力/网盘 ↔ download/stream/attachment/episode/track/save…
+- 新增元信息扫描：`og:video`、`twitter:player:stream`、`itemprop=contentUrl`、JSON-LD 的 contentUrl/embedUrl
+- 页面脚本里的直链也抓（藏在 JS 变量里的 m3u8/mp4 不再漏）
+- HLS/DASH 的 Content-Type 直接识别为可下流

@@ -18,7 +18,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-data class TsSegment(val url: String, val key: ByteArray?, val iv: ByteArray?)
+data class TsSegment(val url: String, val key: ByteArray?, val iv: ByteArray?, val range: String? = null, val init: ByteArray? = null)
 
 class GlobalRateLimiter(private val permitsPerSecond: Long) {
     private var nextFreeTicketMicros = 0L
@@ -42,7 +42,8 @@ class Segmenter(private val client: OkHttpClient) {
     suspend fun download(taskId: String, url: String, outFile: File, parts: Int, speedLimitKb: Long, customHeaders: Map<String, String>, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
         val headers = okhttp3.Headers.Builder().apply { customHeaders.forEach { (k, v) -> add(k, v) } }.build()
         
-        if (url.contains(".m3u8") || url.endsWith(".ts", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
+        if (url.contains(".m3u8", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
+        if (url.endsWith(".ts", true) && !outFile.name.endsWith(".ts", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
 
         // 核心修复：智能探测文件大小与 Range 支持
         val (total, supportsRange) = probeFileSize(url, headers)
@@ -243,13 +244,16 @@ class Segmenter(private val client: OkHttpClient) {
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     val partFile = File(tmpDir, "$index.ts")
+                    if (segment.init != null) { partFile.writeBytes(segment.init); downloaded.incrementAndGet(); return@withPermit }
                     if (!partFile.exists() || partFile.length() == 0L) {
                         var r = 3
                         while (r > 0) {
                             if (!isActive) return@withPermit
                             var callRef: okhttp3.Call? = null
                             try {
-                                val call = client.newCall(Request.Builder().url(segment.url).headers(headers).build())
+                                val rb = Request.Builder().url(segment.url).headers(headers)
+                                segment.range?.let { r -> rb.header("Range", "bytes=$r") }
+                                val call = client.newCall(rb.build())
                                 callRef = call
                                 activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
                                 call.execute().use { resp ->
@@ -282,9 +286,10 @@ class Segmenter(private val client: OkHttpClient) {
         tmpDir.deleteRecursively()
         onTick(total, total, 0, emptyList())
         if (!success) {
-            val fallbackTs = File(outFile.parentFile, outFile.name.replace(".mp4", ".ts"))
+            val fallbackTs = File(outFile.parentFile, outFile.name.substringBeforeLast('.') + ".ts")
             if (mergedTs.exists()) mergedTs.renameTo(fallbackTs)
-            throw Exception("MP4 封装失败，已保留 .ts 原文件 (´･_･`)")
+            if (fallbackTs.exists()) return@coroutineScope fallbackTs
+            throw Exception("TS 合并失败 (´･_･`)")
         }
         mergedTs.delete()
         outFile
@@ -293,43 +298,87 @@ class Segmenter(private val client: OkHttpClient) {
     private suspend fun parseM3u8(url: String, visited: MutableSet<String>, headers: okhttp3.Headers): List<TsSegment> = withContext(Dispatchers.IO) {
         if (visited.contains(url)) return@withContext emptyList()
         visited.add(url)
-        val text = client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+        val text = runCatching {
+            client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+        }.getOrDefault("")
+        if (text.isBlank()) return@withContext emptyList()
         val lines = text.lines()
+
+        // 主播放列表：按带宽选最高，而不是抓第一条（第一条常是最低清）
         if (lines.any { it.startsWith("#EXT-X-STREAM-INF") }) {
-            val subUrl = lines.firstOrNull { it.isNotBlank() && !it.startsWith("#") }
-            if (subUrl != null) return@withContext parseM3u8(resolveUrl(url, subUrl), visited, headers)
-        }
-        var currentKey: ByteArray? = null; var currentIv: ByteArray? = null; var mediaSequence = 0L; var segmentIndex = 0L
-        val result = mutableListOf<TsSegment>()
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (trimmed.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
-                mediaSequence = trimmed.substringAfter(":").toLongOrNull() ?: 0L
-            } else if (trimmed.startsWith("#EXT-X-KEY:")) {
-                val method = Regex("METHOD=([^,]+)").find(trimmed)?.groupValues?.get(1) ?: "NONE"
-                if (method == "AES-128") {
-                    val keyUri = Regex("URI=\"(.*?)\"").find(trimmed)?.groupValues?.get(1)
-                    val ivStr = Regex("IV=0x(.*?)(,|$)").find(trimmed)?.groupValues?.get(1)
-                    if (keyUri != null) {
-                        currentKey = client.newCall(Request.Builder().url(resolveUrl(url, keyUri)).headers(headers).build()).execute().use { it.body?.bytes() }
-                        currentIv = if (ivStr != null) hexStringToByteArray(ivStr) else null
-                    } else { currentKey = null; currentIv = null }
-                } else if (method == "NONE") { currentKey = null; currentIv = null }
-            } else if (trimmed.isNotBlank() && !trimmed.startsWith("#")) {
-                val absUrl = resolveUrl(url, trimmed)
-                if (absUrl.contains(".m3u8", ignoreCase = true)) {
-                    result.addAll(parseM3u8(absUrl, visited, headers))
-                } else {
-                    val ivToUse = currentIv ?: if (currentKey != null) {
-                        val seq = mediaSequence + segmentIndex
-                        ByteArray(16).apply {
-                            this[8] = (seq shr 56).toByte(); this[9] = (seq shr 48).toByte(); this[10] = (seq shr 40).toByte(); this[11] = (seq shr 32).toByte()
-                            this[12] = (seq shr 24).toByte(); this[13] = (seq shr 16).toByte(); this[14] = (seq shr 8).toByte(); this[15] = seq.toByte()
-                        }
-                    } else null
-                    result.add(TsSegment(absUrl, currentKey, ivToUse))
+            var bestUrl = ""; var bestBandwidth = -1L
+            var pendingBandwidth = -1L
+            for (line in lines) {
+                val t = line.trim()
+                if (t.startsWith("#EXT-X-STREAM-INF")) {
+                    pendingBandwidth = Regex("BANDWIDTH=(\\d+)").find(t)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                } else if (t.isNotBlank() && !t.startsWith("#")) {
+                    if (pendingBandwidth >= bestBandwidth) { bestBandwidth = pendingBandwidth; bestUrl = t }
+                    pendingBandwidth = -1L
                 }
-                segmentIndex++
+            }
+            if (bestUrl.isNotBlank()) return@withContext parseM3u8(resolveUrl(url, bestUrl), visited, headers)
+        }
+
+        var currentKey: ByteArray? = null; var currentIv: ByteArray? = null
+        var mediaSequence = 0L; var segmentIndex = 0L
+        var mapUri: String? = null
+        var pendingRange: String? = null
+        val keyCache = HashMap<String, ByteArray>()
+        val result = mutableListOf<TsSegment>()
+
+        for (raw in lines) {
+            val trimmed = raw.trim()
+            when {
+                trimmed.startsWith("#EXT-X-KEY:") -> {
+                    val method = Regex("METHOD=([^,]+)").find(trimmed)?.groupValues?.get(1)?.trim() ?: "NONE"
+                    if (method == "AES-128") {
+                        val keyUri = Regex("URI=\"(.*?)\"") .find(trimmed)?.groupValues?.get(1)
+                        val ivStr = Regex("IV=0x([0-9A-Fa-f]+)").find(trimmed)?.groupValues?.get(1)
+                        if (keyUri != null) {
+                            val absKey = resolveUrl(url, keyUri)
+                            currentKey = keyCache.getOrPut(absKey) {
+                                runCatching {
+                                    client.newCall(Request.Builder().url(absKey).headers(headers).build()).execute().use { it.body?.bytes() ?: ByteArray(0) }
+                                }.getOrDefault(ByteArray(0))
+                            }
+                            currentIv = if (ivStr != null) hexStringToByteArray(ivStr) else null
+                        } else { currentKey = null; currentIv = null }
+                    } else { currentKey = null; currentIv = null }
+                }
+                trimmed.startsWith("#EXT-X-MEDIA-SEQUENCE:") ->
+                    mediaSequence = trimmed.substringAfter(":").trim().toLongOrNull() ?: 0L
+                trimmed.startsWith("#EXT-X-MAP:") ->
+                    Regex("URI=\"(.*?)\"") .find(trimmed)?.groupValues?.get(1)?.let { mapUri = resolveUrl(url, it) }
+                trimmed.startsWith("#EXT-X-BYTERANGE:") ->
+                    pendingRange = trimmed.substringAfter(":").trim()
+                trimmed.isNotBlank() && !trimmed.startsWith("#") -> {
+                    val absUrl = resolveUrl(url, trimmed)
+                    if (absUrl.contains(".m3u8", ignoreCase = true)) {
+                        result.addAll(parseM3u8(absUrl, visited, headers))
+                    } else {
+                        val ivToUse = currentIv ?: if (currentKey != null) {
+                            val seq = mediaSequence + segmentIndex
+                            ByteArray(16).apply {
+                                this[11] = (seq shr 32).toByte(); this[12] = (seq shr 24).toByte()
+                                this[13] = (seq shr 16).toByte(); this[14] = (seq shr 8).toByte(); this[15] = seq.toByte()
+                            }
+                        } else null
+                        result.add(TsSegment(absUrl, currentKey, ivToUse, pendingRange, null))
+                        pendingRange = null
+                    }
+                    segmentIndex++
+                }
+            }
+        }
+        // fMP4 初始化段（EXT-X-MAP）放在最前，否则合并后无法播放
+        if (mapUri != null) {
+            runCatching {
+                client.newCall(Request.Builder().url(mapUri!!).headers(headers).build()).execute().use { resp ->
+                    resp.body?.bytes()?.let { bytes ->
+                        result.add(0, TsSegment(mapUri!!, null, null, null, bytes))
+                    }
+                }
             }
         }
         return@withContext result

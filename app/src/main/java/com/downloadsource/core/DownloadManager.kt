@@ -98,6 +98,11 @@ object DownloadManager {
 
                 val parsedUrl = MirrorResolver.resolveBest(context, url, httpClient)
                 val realName = sanitizeFileName(customName ?: probeRealFileName(parsedUrl, finalHeaders))
+                    .let { n ->
+                        // 流媒体清单不能当成品文件：m3u8/mpd 落盘一定是 mp4
+                        val ext = n.substringAfterLast('.', "").lowercase()
+                        if (ext == "m3u8" || ext == "mpd") n.substringBeforeLast('.') + ".mp4" else n
+                    }
                 val catDir = createCategoryDir(baseDir, realName)
                 updateTaskState(context, task.id) {
                     it.copy(url = parsedUrl, fileName = uniqueName(catDir, realName), dirPath = catDir.absolutePath)
@@ -121,6 +126,52 @@ object DownloadManager {
         }
         return name
     }
+
+    /** 按文件头纠正扩展名：服务器给错后缀/没给后缀时，落地文件仍能被系统正确识别 */
+    private fun correctExtensionByMagic(file: File): File {
+        if (!file.exists() || file.length() < 12) return file
+        val head = ByteArray(16)
+        runCatching { file.inputStream().use { it.read(head) } }
+        val ext = file.extension.lowercase()
+        val detected = when {
+            head[0] == 0x25.toByte() && head[1] == 0x50.toByte() && head[2] == 0x44.toByte() && head[3] == 0x46.toByte() -> "pdf"
+            head[0] == 0x52.toByte() && head[1] == 0x61.toByte() && head[2] == 0x72.toByte() -> "rar"
+            head[0] == 0x37.toByte() && head[1] == 0x7A.toByte() && head[2] == 0xBC.toByte() -> "7z"
+            head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte() -> "gz"
+            head[0] == 0x42.toByte() && head[1] == 0x5A.toByte() -> "bz2"
+            head[0] == 0xFD.toByte() && head[1] == 0x37.toByte() -> "xz"
+            head[0] == 0x49.toByte() && head[1] == 0x44.toByte() && head[2] == 0x33.toByte() -> "mp3"
+            head[0] == 0x66.toByte() && head[1] == 0x4C.toByte() -> "flac"
+            head[0] == 0x4F.toByte() && head[1] == 0x67.toByte() && head[2] == 0x67.toByte() -> "ogg"
+            head[0] == 0x89.toByte() && head[1] == 0x50.toByte() -> "png"
+            head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte() -> "jpg"
+            head[0] == 0x1A.toByte() && head[1] == 0x45.toByte() && head[2] == 0xDF.toByte() -> "mkv"
+            head[0] == 0x50.toByte() && head[1] == 0x4B.toByte() -> "zip"
+            head[4] == 0x66.toByte() && head[5] == 0x74.toByte() && head[6] == 0x79.toByte() && head[7] == 0x70.toByte() -> {
+                val brand = String(head.copyOfRange(8, 12), Charsets.ISO_8859_1)
+                if (brand.startsWith("M4A")) "m4a" else if (brand.startsWith("qt")) "mov" else "mp4"
+            }
+            else -> ""
+        }
+        if (detected.isEmpty()) return file
+        // zip 家族：apk/xapk 本身也是 zip，别把 apk 改成 zip
+        val finalExt = if (detected == "zip") {
+            when (ext) {
+                "apk", "xapk", "apks", "aab", "epub", "docx", "xlsx", "pptx", "jar" -> ext
+                else -> if (file.name.contains("AndroidManifest") || looksLikeApk(file)) "apk" else "zip"
+            }
+        } else detected
+        if (ext == finalExt) return file
+        val renamed = File(file.parentFile, file.name.substringBeforeLast('.') + "." + finalExt)
+        return try {
+            if (renamed.exists()) renamed.delete()
+            if (file.renameTo(renamed)) renamed else file
+        } catch (e: Exception) { file }
+    }
+
+    private fun looksLikeApk(file: File): Boolean = runCatching {
+        java.util.zip.ZipFile(file).use { z -> z.getEntry("AndroidManifest.xml") != null }
+    }.getOrDefault(false)
 
     /** 同名文件自动加序号，避免覆盖已有文件 */
     private fun uniqueName(dir: File, name: String): String {
@@ -182,7 +233,8 @@ object DownloadManager {
                     }
                     DownloadService.updateProgress(context, t.fileName, d, total, speed)
                 }
-                updateTaskState(context, id) { it.copy(status = TaskStatus.Completed, downloadedBytes = maxOf(it.totalBytes, out.length()), totalBytes = maxOf(it.totalBytes, out.length()), speed = 0, outputPath = out.absolutePath) }
+                val finalOut = correctExtensionByMagic(out)
+                updateTaskState(context, id) { it.copy(status = TaskStatus.Completed, fileName = finalOut.name, downloadedBytes = maxOf(it.totalBytes, finalOut.length()), totalBytes = maxOf(it.totalBytes, finalOut.length()), speed = 0, outputPath = finalOut.absolutePath) }
 
                 if (out.name.endsWith(".apk", true)) {
                     try {

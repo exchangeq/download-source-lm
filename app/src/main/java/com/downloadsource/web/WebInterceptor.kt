@@ -83,7 +83,7 @@ class WebInterceptor {
                 }
             }
             // 中英文双语链接扫描：下载/播放/高清 与 download/play/stream
-            var KEYWORDS = /(下载|播放|高清|音轨|视频|音频|附件|download|Download|DOWNLOAD|play|Play|stream|Stream|video|audio|media|file)/;
+            var KEYWORDS = /(下载|下载链接|立即下载|免费下载|播放|在线观看|高清|蓝光|音轨|字幕|视频|音频|附件|磁力|网盘|资源|download|Download|DOWNLOAD|play|Play|stream|Stream|video|Video|audio|Audio|media|Media|file|File|attachment|Attachment|episode|Episode|track|Track|save|Save)/;
             function scanLinks() {
                 try {
                     var as = document.querySelectorAll('a,button,[role="button"]');
@@ -96,18 +96,43 @@ class WebInterceptor {
                     }
                 } catch (e) {}
             }
+            // 元信息扫描：og:video / twitter:player / itemprop contentUrl / JSON-LD
+            function scanMeta() {
+                try {
+                    var metas = document.querySelectorAll('meta,link');
+                    for (var i = 0; i < metas.length; i++) {
+                        var m = metas[i];
+                        var k = (m.getAttribute('property') || m.getAttribute('name') || m.getAttribute('itemprop') || m.getAttribute('rel') || '').toLowerCase();
+                        if (k.indexOf('video') < 0 && k.indexOf('audio') < 0 && k.indexOf('stream') < 0 && k.indexOf('contenturl') < 0 && k.indexOf('embedurl') < 0 && k.indexOf('video_src') < 0) continue;
+                        var v = m.getAttribute('content') || m.getAttribute('href');
+                        if (v) report(v);
+                    }
+                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    for (var j = 0; j < scripts.length; j++) {
+                        try {
+                            var o = JSON.parse(scripts[j].textContent || '{}');
+                            var arr = Array.isArray(o) ? o : [o];
+                            for (var a = 0; a < arr.length; a++) {
+                                var it = arr[a] || {};
+                                if (it.contentUrl) report(String(it.contentUrl));
+                                if (it.embedUrl) report(String(it.embedUrl));
+                            }
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+            }
             var lastScan = 0;
             function scanText() {
                 if (Date.now() - lastScan < 3000) return;
                 lastScan = Date.now();
                 try {
                     var txt = document.documentElement.innerHTML || '';
-                    var re = /https?:\/\/[^\s"'<>\\]+?\.(mp4|m3u8|mp3|m4a|mkv|webm|flv|mov|ts|zip|rar|apk|pdf)(?:[^\s"'<>\\]*)/gi;
+                    var re = /https?:\/\/[^\s"'<>\\]+?\.(mp4|m4v|m3u8|mpd|mp3|m4a|aac|flac|wav|ogg|mkv|webm|flv|mov|ts|zip|rar|7z|apk|xapk|ipa|pdf|epub)(?:[^\s"'<>\\]*)/gi;
                     var m, count = 0;
                     while ((m = re.exec(txt)) !== null && count < 80) { report(m[0]); count++; }
                 } catch (e) {}
             }
-            setInterval(function() { try { scanMedia(); scanText(); scanLinks(); } catch (e) {} }, 1500);
+            setInterval(function() { try { scanMedia(); scanText(); scanLinks(); scanMeta(); } catch (e) {} }, 1500);
             setInterval(function() {
                 try {
                     var list = performance.getEntriesByType('resource');
