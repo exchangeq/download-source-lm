@@ -43,6 +43,7 @@ class Segmenter(private val client: OkHttpClient) {
         val headers = okhttp3.Headers.Builder().apply { customHeaders.forEach { (k, v) -> add(k, v) } }.build()
         
         if (url.contains(".m3u8", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
+        if (url.contains(".mpd", true)) return@coroutineScope downloadDash(taskId, url, outFile, parts, headers, onTick)
         if (url.endsWith(".ts", true) && !outFile.name.endsWith(".ts", true)) return@coroutineScope downloadM3u8(taskId, url, outFile, parts, headers, onTick)
 
         // 核心修复：智能探测文件大小与 Range 支持
@@ -244,7 +245,13 @@ class Segmenter(private val client: OkHttpClient) {
         if (segments.isEmpty()) error("未找到有效的 TS 分片 (´･_･`)")
         
         val tmpDir = File(outFile.parentFile, ".${outFile.name}.ts_parts").apply { mkdirs() }
-        val downloaded = AtomicLong(0)
+        // 跨次续传校验：清单指纹（首尾分片 + 数量）变化时丢弃旧分片，避免拼错
+        val fingerprint = "${segments.size}|${segments.firstOrNull()?.url}|${segments.lastOrNull()?.url}"
+        val metaFile = File(tmpDir, ".fingerprint")
+        val oldFp = runCatching { metaFile.readText() }.getOrNull()
+        if (oldFp != null && oldFp != fingerprint) tmpDir.listFiles()?.forEach { it.delete() }
+        runCatching { metaFile.writeText(fingerprint) }
+        val downloaded = AtomicLong(segments.count { File(tmpDir, "$it.ts").let { f -> f.exists() && f.length() > 0 } }.toLong())
         val total = segments.size.toLong()
         val ticker = launch(Dispatchers.Default) { while (isActive) { delay(300); onTick(downloaded.get(), total, 0, emptyList()) } }
 
@@ -410,6 +417,223 @@ class Segmenter(private val client: OkHttpClient) {
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
             cipher.doFinal(data)
         } catch (e: Exception) { data }
+    }
+
+    // ---------- DASH (MPD) ----------
+
+    private data class DashTrack(val kind: String, val initUrl: String?, val segmentUrls: List<String>, val bandwidth: Long)
+
+    private suspend fun downloadDash(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
+        val xml = withContext(Dispatchers.IO) {
+            client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+        }
+        if (xml.isBlank() || !xml.contains("<MPD")) error("MPD 拉取失败 (´･_･`)")
+
+        val durSec = Regex("mediaPresentationDuration=\"PT([0-9.]+)S\"").find(xml)?.groupValues?.get(1)?.toDoubleOrNull()
+            ?: Regex("<Period[^>]*duration=\"PT([0-9.]+)S\"").find(xml)?.groupValues?.get(1)?.toDoubleOrNull()
+
+        val tracks = parseDashTracks(xml, url, durSec)
+        if (tracks.isEmpty()) error("不支持的 MPD：未找到可用分片模板")
+
+        var downloadedBytes = AtomicLong(0)
+        val totalSegments = tracks.sumOf { it.segmentUrls.size }.coerceAtLeast(1).toLong()
+        val doneSegments = AtomicLong(0)
+        val ticker = launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(500)
+                onTick(downloadedBytes.get(), 0L, 0L, emptyList())
+            }
+        }
+
+        val tmpRoot = File(outFile.parentFile, ".${outFile.name}.dash_parts").apply { mkdirs() }
+        val outputs = mutableListOf<File>()
+        try {
+            tracks.forEachIndexed { ti, track ->
+                val dir = File(tmpRoot, "t$ti").apply { mkdirs() }
+                val semaphore = Semaphore(parts)
+                var initPath: String? = null
+                if (track.initUrl != null) {
+                    val f = File(dir, "init.mp4")
+                    if (!f.exists() || f.length() == 0L) {
+                        client.newCall(Request.Builder().url(track.initUrl).headers(headers).build()).execute().use { r ->
+                            if (r.isSuccessful) f.writeBytes(r.body?.bytes() ?: ByteArray(0)) else error("init 分片 HTTP ${r.code}")
+                        }
+                    }
+                    initPath = f.absolutePath
+                }
+                track.segmentUrls.mapIndexed { idx, segUrl ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            val part = File(dir, "$idx.m4s")
+                            if (!part.exists() || part.length() == 0L) {
+                                var attempt = 0
+                                while (attempt < 4) {
+                                    try {
+                                        client.newCall(Request.Builder().url(segUrl).headers(headers).build()).execute().use { r ->
+                                            if (!r.isSuccessful) error("分片 HTTP ${r.code}")
+                                            val bytes = r.body?.bytes() ?: ByteArray(0)
+                                            part.writeBytes(bytes)
+                                            downloadedBytes.addAndGet(bytes.size.toLong())
+                                        }
+                                        break
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                        attempt++
+                                        if (attempt >= 4) throw e
+                                        delay(700L * (1L shl attempt))
+                                    }
+                                }
+                            } else downloadedBytes.addAndGet(part.length())
+                            doneSegments.incrementAndGet()
+                        }
+                    }
+                }.awaitAll()
+
+                val list = mutableListOf<String>()
+                initPath?.let { list.add(it) }
+                // SegmentList 这类可能不连续编号，按落盘顺序合并
+                (0 until track.segmentUrls.size).forEach { i -> File(dir, "$i.m4s").takeIf { it.exists() }?.let { list.add(it.absolutePath) } }
+                val merged = File(tmpRoot, "track$ti.${if (track.kind == "audio") "m4a" else "mp4"}")
+                if (list.size <= 1) {
+                    if (list.isNotEmpty()) File(list.first()).copyTo(merged, true) else error("分片为空")
+                } else if (!ZeroCore.mergeFiles(list.toTypedArray(), merged.absolutePath)) error("分片合并失败")
+                outputs.add(merged)
+            }
+        } finally { /* 保留分片便于续传，成功后统一清理 */ }
+
+        ticker.cancel()
+        val finalFile = if (outputs.size >= 2) {
+            val muxed = File(tmpRoot, "muxed.mp4")
+            if (runCatching { remuxToMp4(outputs, muxed) }.isSuccess && muxed.exists() && muxed.length() > 0) {
+                muxed.copyTo(outFile, true); muxed
+            } else {
+                // 音频轨合成失败时先把视频轨交付，至少能看
+                outputs.first().copyTo(outFile, true); outputs.first()
+            }
+        } else {
+            outputs.first().copyTo(outFile, true); outputs.first()
+        }
+        tmpRoot.deleteRecursively()
+        onTick(finalFile.length(), finalFile.length(), 0, List(tracks.size.coerceAtLeast(1)) { 1f })
+        return@coroutineScope outFile
+    }
+
+    private fun parseDashTracks(xml: String, mpdUrl: String, durSec: Double?): List<DashTrack> {
+        val adaptations = Regex("<AdaptationSet([^>]*)>(.*?)</AdaptationSet>", setOf(RegexOption.DOT_MATCHES_ALL)).findAll(xml).map { it.value }.toList()
+        val tracks = mutableListOf<DashTrack>()
+
+        data class Cand(val kind: String, val bandwidth: Long, val init: String?, val segs: List<String>, val base: String)
+
+        for (block in adaptations) {
+            val headAttrs = Regex("<AdaptationSet([^>]*)>").find(block)?.groupValues?.get(1) ?: ""
+            val content = block.substringAfter('>').substringBeforeLast("</AdaptationSet>")
+            val repBlocks = Regex("<Representation([^>]*?)(/>|>(.*?)</Representation>)", setOf(RegexOption.DOT_MATCHES_ALL)).findAll(block).toList()
+            if (repBlocks.isEmpty()) continue
+
+            val best = repBlocks.map { m ->
+                val attrs = m.groupValues[1]
+                val body = m.groupValues[3]
+                val mime = attrOf(attrs, "mimeType") ?: attrOf(headAttrs, "mimeType") ?: ""
+                val kind = when {
+                    mime.contains("audio") || attrOf(headAttrs, "contentType") == "audio" -> "audio"
+                    mime.contains("video") -> "video"
+                    else -> ""
+                }
+                if (kind.isEmpty()) return@map null
+                val bandwidth = attrOf(attrs, "bandwidth")?.toLongOrNull() ?: 0L
+                val repId = attrOf(attrs, "id") ?: ""
+                val baseUrl = Regex("<BaseURL>(.*?)</BaseURL>").find(body)?.groupValues?.get(1)?.trim() ?: ""
+                val template = Regex("<SegmentTemplate([^>]*?)/?>", setOf(RegexOption.DOT_MATCHES_ALL)).find(body)?.groupValues?.get(1)
+                    ?: Regex("<SegmentTemplate([^>]*?)/?>", setOf(RegexOption.DOT_MATCHES_ALL)).find(headAttrs)?.groupValues?.get(1)
+                val segList = Regex("<SegmentURL([^>]*?)/?>").findAll(body).mapNotNull { attrOf(it.groupValues[1], "media") }.toList()
+                val init: String?
+                val segs: List<String>
+                if (!segList.isEmpty()) {
+                    init = null
+                    segs = segList.map { resolveUrl(mpdUrl, joinBase(baseUrl, it)) }
+                } else if (template != null) {
+                    val media = attrOf(template, "media") ?: return@map null
+                    val initTpl = attrOf(template, "initialization")
+                    val startNumber = attrOf(template, "startNumber")?.toIntOrNull() ?: 1
+                    val segDur = attrOf(template, "duration")?.toDoubleOrNull() ?: 0.0
+                    val timescale = attrOf(template, "timescale")?.toDoubleOrNull() ?: 1.0
+                    val count = if (durSec != null && segDur > 0) kotlin.math.ceil(durSec * timescale / segDur).toInt() else 0
+                    if (count <= 0) return@map null
+                    val fill: (String) -> String = { tpl ->
+                        tpl.replace("\$RepresentationID\$", repId)
+                            .replace("\$Bandwidth\$", bandwidth.toString())
+                            .replace("\$Number\$", startNumber.toString())
+                    }
+                    init = initTpl?.let { resolveUrl(mpdUrl, joinBase(baseUrl, fill(it))) }
+                    segs = (0 until count).map { i ->
+                        val numberStr = (startNumber + i).toString()
+                        val tpl = media.replace("\$RepresentationID\$", repId)
+                            .replace("\$Bandwidth\$", bandwidth.toString())
+                            .replace("\$Number\$", numberStr)
+                            .replace("\$Time\$", (((i * segDur) / timescale).toLong()).toString())
+                        resolveUrl(mpdUrl, joinBase(baseUrl, tpl))
+                    }
+                } else {
+                    return@map null
+                }
+                Cand(kind, bandwidth, init, segs, baseUrl)
+            }.filterNotNull().filter { it.segs.isNotEmpty() }
+
+            best.groupBy { it.kind }.forEach { (kind, list) ->
+                val pick = list.maxByOrNull { it.bandwidth } ?: return@forEach
+                tracks.add(DashTrack(kind, pick.init, pick.segs, pick.bandwidth))
+            }
+        }
+        return tracks
+    }
+
+    private fun attrOf(attrs: String, name: String): String? =
+        Regex(name + "=\"([^\"]*)\"").find(attrs)?.groupValues?.get(1)
+
+    private fun joinBase(base: String, path: String): String =
+        if (base.isBlank()) path else if (path.startsWith("http")) path else base.trimEnd('/') + "/" + path.trimStart('/')
+
+    /** 把视频/音频多条 mp4 轨道合成一个文件 */
+    private fun remuxToMp4(inputs: List<File>, output: File) {
+        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val extractors = mutableListOf<MediaExtractor>()
+        try {
+            val trackMap = HashMap<Pair<Int, Int>, Int>()
+            inputs.forEachIndexed { ei, file ->
+                val ex = MediaExtractor(); ex.setDataSource(file.absolutePath); extractors.add(ex)
+                for (i in 0 until ex.trackCount) {
+                    val format = ex.getTrackFormat(i)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                    if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                        ex.selectTrack(i); trackMap[ei to i] = muxer.addTrack(format)
+                    }
+                }
+            }
+            muxer.start()
+            val buffer = ByteBuffer.allocate(2 * 1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+            // 简单按时间戳合并：反复挑当前时间戳最小的轨道
+            while (true) {
+                var bestEx = -1; var bestTime = Long.MAX_VALUE
+                extractors.forEachIndexed { ei, ex ->
+                    val t = ex.sampleTime
+                    if (t >= 0 && t < bestTime) { bestTime = t; bestEx = ei }
+                }
+                if (bestEx < 0) break
+                val ex = extractors[bestEx]
+                val ti = ex.sampleTrackIndex
+                info.size = ex.readSampleData(buffer, 0)
+                if (info.size < 0) { ex.advance(); continue }
+                info.presentationTimeUs = ex.sampleTime
+                info.flags = ex.sampleFlags
+                info.offset = 0
+                trackMap[bestEx to ti]?.let { muxer.writeSampleData(it, buffer, info) }
+                ex.advance()
+            }
+        } finally {
+            runCatching { muxer.stop() }; runCatching { muxer.release() }
+            extractors.forEach { runCatching { it.release() } }
+        }
     }
 
     private fun remuxTsToMp4(input: File, output: File) {

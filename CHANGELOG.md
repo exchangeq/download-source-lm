@@ -276,3 +276,22 @@
 - M3U8 主列表按带宽选最高画质、支持 EXT-X-MAP / BYTERANGE（承接 7.6）
 - 嗅探新增 meta/JSON-LD/JS 直链三路，中英双语关键词 40+
 - 毛玻璃主题 + 弹簧动画 + 分片进度详情面板（承接 7.4/7.5）
+
+## v7.8.0-lm（专攻 HLS 续传 + DASH）
+
+### HLS 断点续传（跨次启动）
+
+- 分片落盘在 `.文件名.ts_parts/`，进程被杀或失败后再次开始，已下分片直接复用，不再从 0 重下
+- 写入 `.fingerprint`（分片数量 + 首尾 URL）；清单变了（直播滚屏/换源）自动丢弃旧分片，避免拼错
+- 启动时统计已完成分片，进度条从实际值继续
+- 分片保留策略：只有成功合成后才清理临时目录
+
+### DASH（MPD）支持
+
+- 解析 `MPD → Period → AdaptationSet → Representation`，视频/音频各选最高码率
+- 支持 `SegmentTemplate`（`$Number$` / `$Time$` / `$RepresentationID$` / `$Bandwidth$`）
+- 支持 `SegmentList`（`<SegmentURL media=…>`）与 `<BaseURL>` 相对路径
+- 支持 `initialization` 初始化段，静态时长按 `mediaPresentationDuration` 计算分片数
+- 分片最多 4 次重试 + 退避，下载后按轨道合并，再用 MediaExtractor/MediaMuxer 合成 mp4
+- 音频轨合成失败时先交付视频轨，保证「能看」而不是「报错」
+- `.mpd` 链接自动命名为 `.mp4`
