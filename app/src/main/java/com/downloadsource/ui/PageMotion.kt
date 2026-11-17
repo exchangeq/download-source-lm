@@ -5,50 +5,56 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.IntOffset
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.roundToInt
 
 /**
- * 每个页面一套入场曲线（全部由三角函数驱动，互不重复）：
- * 0 下载页：正弦上浮 + 轻微右移
- * 1 浏览器：纯透明度呼吸（WebView 绝不做位移/缩放，否则黑屏）
- * 2 文件库：余弦缩放 + 左移
- * 3 设置页：双频正弦抖动收尾
+ * 每个页面一套独立的三角函数入场。
+ * 浏览器页承载 WebView，只能用布局位移，不能加 alpha/scale/rotation 图层，
+ * 否则部分机型会把 WebView 渲染成黑屏。
  */
 @Composable
 fun PageMotion(index: Int, content: @Composable () -> Unit) {
-    if (index == 1) { Box(Modifier.fillMaxSize()) { content() }; return }
-
     val anim = remember { Animatable(0f) }
-    LaunchedEffect(index) { anim.animateTo(1f, tween(720, easing = FastOutSlowInEasing)) }
+    LaunchedEffect(index) { anim.animateTo(1f, tween(760, easing = FastOutSlowInEasing)) }
     val t = anim.value
     val phase = t * PI.toFloat()
 
-    val graph: androidx.compose.ui.graphics.GraphicsLayerScope.() -> Unit = {
-        alpha = 0.5f + 0.5f * t
-        when (index) {
-            0 -> {
-                translationY = 46f * (1f - t) + 6f * sin(phase)
-                translationX = 22f * (1f - t)
-            }
-            2 -> {
-                val sc = 0.9f + 0.1f * cos((1f - t) * PI.toFloat() / 2f)
-                scaleX = sc
-                scaleY = sc
-                translationX = -34f * (1f - t)
-            }
-            else -> {
-                translationY = 24f * (1f - t)
-                rotationZ = 3.5f * sin(phase * 2f)
-            }
+    when (index) {
+        0 -> {
+            val dx = (18f * sin(phase * 2f) * (1f - t)).roundToInt()
+            val dy = (52f * (1f - t) + 8f * sin(phase)).roundToInt()
+            Box(
+                Modifier.fillMaxSize()
+                    .offset { IntOffset(dx, dy) }
+                    .alpha(0.55f + 0.45f * t)
+            ) { content() }
+        }
+        1 -> {
+            val dx = (36f * cos((1f - t) * PI.toFloat() / 2f) * (1f - t)).roundToInt()
+            Box(Modifier.fillMaxSize().offset { IntOffset(dx, 0) }) { content() }
+        }
+        else -> {
+            val sc = 0.90f + 0.10f * sin(t * PI.toFloat() / 2f)
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    scaleX = sc
+                    scaleY = sc
+                    translationX = -38f * (1f - t)
+                    rotationZ = 2.5f * cos(phase)
+                    alpha = 0.5f + 0.5f * t
+                }
+            ) { content() }
         }
     }
-
-    Box(Modifier.fillMaxSize().graphicsLayer(graph)) { content() }
 }

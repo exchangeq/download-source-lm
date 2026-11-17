@@ -17,6 +17,7 @@ object MirrorResolver {
     private const val KEY_BEST = "best_mirror"
     private const val KEY_BEST_TS = "best_mirror_ts"
     private const val BLACKLIST_MS = 10 * 60 * 1000L
+    private const val KEY_AUTO = "auto_github"
 
     /**
      * 节点池：100 个前缀型代理候选。
@@ -142,6 +143,21 @@ object MirrorResolver {
     /** 用户显式启用的节点；未启用则返回空，表示直连 */
     private fun enabled(context: Context): List<String> = load(context).filter { it.isNotBlank() }
 
+    /** GitHub 自动加速默认开启：没手动配节点时自动挑前 12 个候选竞速 */
+    private fun autoGithub(context: Context): Boolean =
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY_AUTO, true)
+
+    fun setAutoGithub(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY_AUTO, value).apply()
+    }
+
+    private fun pool(context: Context): List<String> {
+        val manual = enabled(context)
+        return if (manual.isNotEmpty()) manual
+        else if (autoGithub(context)) AVAILABLE_MIRRORS.take(12)
+        else emptyList()
+    }
+
     private fun isGithub(url: String) = url.contains("github.com") || url.contains("githubusercontent.com")
 
     private fun join(mirror: String, url: String): String =
@@ -171,7 +187,7 @@ object MirrorResolver {
     /** 同步兜底：只使用已验证节点，绝不把死链拼进 URL */
     fun resolveFastest(context: Context, url: String): String {
         if (!isGithub(url)) return url
-        if (enabled(context).isEmpty()) return url
+        if (pool(context).isEmpty()) return url
         val m = cachedBest(context)
         return if (m.isNotBlank()) join(m, url) else url
     }
@@ -182,19 +198,19 @@ object MirrorResolver {
      */
     suspend fun resolveBest(context: Context, url: String, client: OkHttpClient): String {
         if (!isGithub(url)) return url
-        val manual = enabled(context)
-        if (manual.isEmpty()) return url
+        val base = pool(context)
+        if (base.isEmpty()) return url
 
         val cached = cachedBest(context)
         if (cached.isNotBlank()) return join(cached, url)
 
-        val pool = manual.filterNot { isDead(it) }
-        if (pool.isEmpty()) return url
+        val alive = base.filterNot { isDead(it) }
+        if (alive.isEmpty()) return url
 
         val winner = withTimeoutOrNull(4000L) {
             coroutineScope {
                 val ch = Channel<String>(Channel.UNLIMITED)
-                val jobs = pool.take(24).map { m ->
+                val jobs = alive.take(24).map { m ->
                     launch(Dispatchers.IO) {
                         try {
                             val probe = Request.Builder().url(join(m, url))

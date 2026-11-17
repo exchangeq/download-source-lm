@@ -290,18 +290,22 @@ object DownloadManager {
         }
     }
 
+    /** 兼容 GBK / 百分号编码 / 带引号的文件名，避免中文变乱码或落成 .bin */
+    private fun decodeFileName(raw: String): String {
+        val trimmed = raw.trim().trim('"', '\'').trim()
+        if (trimmed.isEmpty()) return ""
+        val utf8 = runCatching { java.net.URLDecoder.decode(trimmed, "UTF-8") }.getOrDefault(trimmed)
+        if (!utf8.contains('\uFFFD')) return utf8
+        return runCatching { java.net.URLDecoder.decode(trimmed, "GBK") }.getOrDefault(utf8)
+    }
+
     private fun parseNameFrom(resp: okhttp3.Response): String? {
         val disposition = resp.header("Content-Disposition") ?: ""
         // RFC 5987: filename*=UTF-8''%E4%B8%AD.zip
-        val ext = Regex("filename\\*=UTF-8''([^;]+)").find(disposition)?.groupValues?.get(1)
-        if (ext != null) runCatching { return java.net.URLDecoder.decode(ext.trim(), "UTF-8") }
-        if (disposition.contains("filename=")) {
-            var name = disposition.substringAfter("filename=").trim('"', ' ')
-            if (name.contains("''")) name = name.substringAfter("''")
-            runCatching { return java.net.URLDecoder.decode(name, "UTF-8") }
-        }
+        Regex("filename\\*=UTF-8''([^;]+)").find(disposition)?.groupValues?.get(1)?.let { return decodeFileName(it) }
+        Regex("filename=\"?([^;\"]+)\"?").find(disposition)?.groupValues?.get(1)?.let { return decodeFileName(it) }
         val last = resp.request.url.encodedPath.substringAfterLast('/')
-        if (last.isNotBlank() && last.contains('.')) return java.net.URLDecoder.decode(last, "UTF-8")
+        if (last.isNotBlank() && last.contains('.')) return decodeFileName(last)
         // 全格式兜底：按 Content-Type 推断扩展名，避免 zip/apk/rar 变成 .bin
         val mime = resp.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase() ?: ""
         val mapped = when (mime) {

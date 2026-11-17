@@ -15,7 +15,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,6 +71,7 @@ import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -101,6 +104,7 @@ private const val DESKTOP_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 
 @SuppressLint("SetJavaScriptEnabled")
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BrowserScreen(
     onPlayVideo: (File) -> Unit,
@@ -136,6 +140,8 @@ fun BrowserScreen(
     var readerMode by remember { mutableStateOf(false) }
     var forceDarkWeb by remember { mutableStateOf(false) }
     var incognito by remember { mutableStateOf(false) }
+    var rebuildTick by remember { mutableStateOf(0) }
+    var fullscreen by remember { mutableStateOf(false) }
     var imagesOn by remember { mutableStateOf(true) }
     var thirdPartyCookies by remember { mutableStateOf(true) }
 
@@ -158,7 +164,7 @@ fun BrowserScreen(
         fileCallback = null
     }
 
-    val webView = remember {
+    val webView = remember(rebuildTick) {
         WebView(ctx).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -196,7 +202,7 @@ fun BrowserScreen(
         if (url != null && url.isNotBlank()) tab.url = url
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(rebuildTick) {
         webView.addJavascriptInterface(webInterceptor, "AndroidBridge")
         webView.webViewClient = object : SafeWebViewClient(
             onDownloadRequest = { url -> pendingDownloadUrl = url; showDownloadDialog = true },
@@ -230,7 +236,10 @@ fun BrowserScreen(
             }
 
             override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
-                android.widget.Toast.makeText(ctx, "页面渲染进程被系统回收，已重建", android.widget.Toast.LENGTH_SHORT).show()
+                // 返回 true 必须自己销毁并重建，否则视图会一直空白/黑屏
+                runCatching { view?.destroy() }
+                rebuildTick += 1
+                android.widget.Toast.makeText(ctx, "渲染进程被系统回收，已重建页面", android.widget.Toast.LENGTH_SHORT).show()
                 return true
             }
 
@@ -259,8 +268,10 @@ fun BrowserScreen(
                 val url = request.url.toString()
                 val ext = url.substringAfterLast('.', "").lowercase().substringBefore('?')
                 if (ext in listOf("mp4", "mp3", "m4a", "aac", "flac", "wav", "m3u8", "webm", "flv", "mov", "mkv", "ts", "apk", "zip", "rar", "7z", "pdf") && !url.contains("favicon")) {
-                    if (sniffedUrls.none { it.url == url } && sniffedUrls.size < 100) {
-                        sniffedUrls.add(WebInterceptor.SniffedMedia(url, null, false))
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (sniffedUrls.none { it.url == url } && sniffedUrls.size < 100) {
+                            sniffedUrls.add(WebInterceptor.SniffedMedia(url, null, false))
+                        }
                     }
                 }
                 return super.shouldInterceptRequest(view, request)
@@ -384,7 +395,7 @@ fun BrowserScreen(
         onDispose { }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(rebuildTick) {
         onDispose {
             runCatching { webView.destroy() }
         }
@@ -410,6 +421,18 @@ fun BrowserScreen(
         webView.loadUrl(tab.url)
     }
 
+    LaunchedEffect(rebuildTick) {
+        if (rebuildTick > 0) {
+            val url = currentTab()?.url ?: engine.homeUrl
+            urlInput = url
+            webView.loadUrl(url)
+        }
+    }
+
+    if (fullscreen) {
+        BackHandler { fullscreen = false }
+    }
+
     if (customView != null) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(factory = { customView!! }, modifier = Modifier.fillMaxSize())
@@ -426,7 +449,8 @@ fun BrowserScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)
+                    .then(if (fullscreen) Modifier.height(0.dp).clipToBounds() else Modifier),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
@@ -524,7 +548,8 @@ fun BrowserScreen(
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
                     .clip(RoundedCornerShape(28.dp)).background(palette.surface)
-                    .padding(vertical = 6.dp),
+                    .padding(vertical = 6.dp)
+                    .then(if (fullscreen) Modifier.height(0.dp).clipToBounds() else Modifier),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -552,15 +577,19 @@ fun BrowserScreen(
             badge = { if (sniffedUrls.isNotEmpty()) Badge { Text(sniffedUrls.size.toString()) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 82.dp)
         ) {
-            IconButton(
-                onClick = {
-                    if (sniffedUrls.isEmpty()) android.widget.Toast.makeText(ctx, "暂未抓取到资源", android.widget.Toast.LENGTH_SHORT).show()
-                    else showSniffList = true
-                },
-                modifier = Modifier.clip(RoundedCornerShape(50))
+            Box(
+                Modifier.clip(RoundedCornerShape(50))
                     .background(if (sniffedUrls.isEmpty()) palette.onSurfaceDim.copy(alpha = 0.4f) else palette.primary.first())
+                    .combinedClickable(
+                        onClick = {
+                            if (sniffedUrls.isEmpty()) android.widget.Toast.makeText(ctx, "暂未抓取到资源", android.widget.Toast.LENGTH_SHORT).show()
+                            else showSniffList = true
+                        },
+                        onLongClick = { showTabs = true }
+                    )
+                    .padding(12.dp)
             ) {
-                Icon(Icons.Default.Layers, "资源嗅探", tint = Color.White)
+                Icon(Icons.Default.Layers, "资源嗅探 / 长按看标签", tint = Color.White)
             }
         }
     }
@@ -614,6 +643,20 @@ fun BrowserScreen(
                     }
                 }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                MenuItem(if (fullscreen) "退出全屏" else "全屏浏览", Icons.Default.Layers, palette) { showMenu = false; fullscreen = !fullscreen }
+                MenuItem("复制当前网址", Icons.Default.Add, palette) {
+                    showMenu = false
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("url", webView.url ?: ""))
+                    android.widget.Toast.makeText(ctx, "网址已复制", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                MenuItem("关闭全部标签", Icons.Default.Delete, palette) {
+                    showMenu = false
+                    tabs.clear()
+                    val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                    tabs.add(fresh)
+                    activeId = fresh.id
+                }
                 MenuItem("分享当前页", Icons.Default.Search, palette) { showMenu = false; sharePage(ctx, webView.url ?: "") }
                 MenuItem("用系统浏览器打开", Icons.Default.Refresh, palette) { showMenu = false; openExternal(ctx, webView.url ?: "") }
                 MenuItem("清除缓存与 Cookie", Icons.Default.Delete, palette) { showMenu = false; clearBrowserData(ctx, webView) }
