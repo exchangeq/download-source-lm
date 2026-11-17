@@ -67,11 +67,14 @@ class Segmenter(private val client: OkHttpClient) {
 
         val counters = List(n) { AtomicLong(0) }
         var lastTick = System.currentTimeMillis(); var lastBytes = 0L
+        var smoothSpeed = 0.0
         val ticker = launch(Dispatchers.Default) {
             while (isActive) {
                 delay(1000)
                 val now = System.currentTimeMillis(); val cur = counters.sumOf { it.get() }
-                val speed = if (now > lastTick) (cur - lastBytes) * 1000 / (now - lastTick) else 0
+                val raw = if (now > lastTick) (cur - lastBytes) * 1000 / (now - lastTick) else 0L
+                smoothSpeed = if (smoothSpeed <= 0.0) raw.toDouble() else smoothSpeed * 0.7 + raw * 0.3
+                val speed = smoothSpeed.toLong()
                 lastTick = now; lastBytes = cur
                 onTick(cur, total, speed, List(n) { i -> val cs = i * total / n; val ce = if (i == n - 1) total else (i + 1) * total / n; (counters[i].get().toFloat() / (ce - cs).coerceAtLeast(1).toFloat()).coerceIn(0f, 1f) })
             }
@@ -88,10 +91,16 @@ class Segmenter(private val client: OkHttpClient) {
             ticker.cancel()
             onTick(total, total, 0, List(n) { 1f })
             outFile
-        } catch (e: Exception) { 
+        } catch (e: Exception) {
             ticker.cancel()
+            val msg = e.message ?: ""
+            // 服务端不支持 Range（返回 200）或区间校验失败时，自动降级单流重下，不让任务废掉
+            if (msg.contains("200") || msg.contains("区间")) {
+                runCatching { outFile.delete() }
+                return@coroutineScope streamDownload(taskId, url, outFile, headers, onTick)
+            }
             if (!outFile.delete()) outFile.deleteOnExit()
-            throw e 
+            throw e
         }
     }
 

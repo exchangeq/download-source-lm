@@ -433,7 +433,7 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
                                 onPause = { DownloadManager.pause(ctx, task.id) }, 
                                 onResume = { DownloadManager.start(ctx, task.id) }, 
                                 onDelete = { DownloadManager.remove(ctx, task.id) },
-                                onOpen = { }
+                                onOpen = { openDownloadedFile(ctx, task) }
                             )
                         }
                     }
@@ -463,6 +463,17 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
                     }
                 }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("同时下载", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    listOf(3, 5, 8).forEach { n ->
+                        Box(
+                            Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50))
+                                .background(if (DownloadManager.MAX_CONCURRENT == n) palette.primary.first() else palette.onSurface.copy(alpha = 0.08f))
+                                .clickable { DownloadManager.MAX_CONCURRENT = n; showBulk = false }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) { Text("$n", color = if (DownloadManager.MAX_CONCURRENT == n) Color.White else palette.onSurface, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("GitHub 自动加速", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     Switch(checked = MirrorResolver.isAutoGithub(ctx), onCheckedChange = {
@@ -498,5 +509,34 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
             DownloadManager.add(ctx, url, name, threads, speed, headers, File(dirPath))
             showAddDialog = false
         }
+    }
+}
+
+/** 已完成任务点击：apk 走安装器，其它走系统打开方式 */
+private fun openDownloadedFile(ctx: android.content.Context, task: com.downloadsource.core.DownloadTask) {
+    val path = task.outputPath ?: return
+    val file = java.io.File(path)
+    if (!file.exists()) {
+        android.widget.Toast.makeText(ctx, "文件已被移动或删除", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    try {
+        val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+        val mime = when (file.extension.lowercase()) {
+            "apk" -> "application/vnd.android.package-archive"
+            "mp4", "mkv", "webm", "avi", "mov", "ts" -> "video/*"
+            "mp3", "flac", "m4a", "wav", "ogg", "aac" -> "audio/*"
+            "jpg", "jpeg", "png", "gif", "webp" -> "image/*"
+            "pdf" -> "application/pdf"
+            "zip", "rar", "7z", "gz", "tar" -> "application/octet-stream"
+            else -> "*/*"
+        }
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        ctx.startActivity(android.content.Intent.createChooser(intent, "打开文件"))
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(ctx, "没有可用的打开方式", android.widget.Toast.LENGTH_SHORT).show()
     }
 }

@@ -162,11 +162,11 @@ object DownloadManager {
             }
         } else detected
         if (ext == finalExt) return file
-        val renamed = File(file.parentFile, file.name.substringBeforeLast('.') + "." + finalExt)
-        return try {
-            if (renamed.exists()) renamed.delete()
-            if (file.renameTo(renamed)) renamed else file
-        } catch (e: Exception) { file }
+        val base = file.name.substringBeforeLast('.')
+        var renamed = File(file.parentFile, "$base.$finalExt")
+        var i = 1
+        while (renamed.exists()) { renamed = File(file.parentFile, "$base ($i).$finalExt"); i++ }
+        return try { if (file.renameTo(renamed)) renamed else file } catch (e: Exception) { file }
     }
 
     private fun looksLikeApk(file: File): Boolean = runCatching {
@@ -206,7 +206,12 @@ object DownloadManager {
     private fun startTask(context: Context, id: String) {
         if (_tasks.value.count { it.status == TaskStatus.Running } >= MAX_CONCURRENT) return
 
-        val t = _tasks.value.find { it.id == id } ?: return
+        val t0 = _tasks.value.find { it.id == id } ?: return
+        val t = if (t0.dirPath.isBlank()) {
+            val fixed = t0.copy(dirPath = DirStore.resolveDownloadDir(context).absolutePath)
+            updateTaskState(context, id) { it.copy(dirPath = fixed.dirPath) }
+            fixed
+        } else t0
         if (t.status == TaskStatus.Running) return
 
         // 空间检查：低于 100MB 直接失败提示，避免写到一半磁盘满
@@ -296,7 +301,7 @@ object DownloadManager {
     fun pause(context: Context, id: String) {
         segmenter.cancelTask(id)
         jobs.remove(id)?.cancel()
-        updateTaskState(context, id) { it.copy(status = TaskStatus.Paused, speed = 0) }
+        updateTaskState(context, id) { it.copy(status = TaskStatus.Paused, speed = 0, segments = emptyList()) }
         checkPending(context)
     }
 
