@@ -770,6 +770,16 @@ fun BrowserScreen(
                             android.widget.Toast.makeText(ctx, "已入队 $added 个任务", android.widget.Toast.LENGTH_SHORT).show()
                             showSniffList = false
                         }) { Text("全部下载") }
+                        TextButton(onClick = {
+                            val videos = sniffedUrls.filter { sniffKind(it.url) == "视频" && !it.isBlob }.take(10)
+                            videos.forEach { DownloadManager.add(ctx, it.url, null, 16, 0, emptyMap(), DirStore.resolveDownloadDir(ctx)) }
+                            android.widget.Toast.makeText(ctx, "已入队 ${videos.size} 个视频", android.widget.Toast.LENGTH_SHORT).show()
+                        }) { Text("仅视频") }
+                        TextButton(onClick = {
+                            val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("links", sniffedUrls.joinToString("\n") { it.url }))
+                            android.widget.Toast.makeText(ctx, "已复制 ${sniffedUrls.size} 条链接", android.widget.Toast.LENGTH_SHORT).show()
+                        }) { Text("复制全部") }
                         TextButton(onClick = { sniffedUrls.clear(); showSniffList = false }) { Text("清空") }
                     }
                 }
@@ -778,10 +788,11 @@ fun BrowserScreen(
                 LazyColumn {
                     order.forEach { kind ->
                         val list = grouped[kind] ?: return@forEach
+                        val sorted = if (kind == "视频") list.sortedByDescending { qualityScore(it.url) } else list
                         item(key = "h_$kind") {
                             Text("$kind · ${list.size}", color = palette.onSurfaceDim, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
                         }
-                        items(list) { media ->
+                        items(sorted) { media ->
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
                             pendingDownloadUrl = media.url; showDownloadDialog = true; showSniffList = false
                         }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1008,5 +1019,18 @@ private fun sniffKind(url: String): String {
         "pdf", "epub", "mobi", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "json", "xml" -> "文档"
         "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic" -> "图片"
         else -> "其它"
+    }
+}
+
+/** 从 URL 里猜清晰度，高的排前面（1080/720/540/360） */
+private fun qualityScore(url: String): Int {
+    val u = url.lowercase()
+    return when {
+        u.contains("2160") || u.contains("4k") -> 5
+        u.contains("1440") || u.contains("2k") -> 4
+        u.contains("1080") || u.contains("fhd") -> 3
+        u.contains("720") || u.contains("hd") -> 2
+        u.contains("540") || u.contains("480") -> 1
+        else -> 0
     }
 }

@@ -330,7 +330,12 @@ fun DownloadScreen(onOpenBrowserUrl: (String) -> Unit) {
                             }
                         }
                     }
-                    Text("${BuildConfig.CHANNEL.uppercase()} · v${BuildConfig.VERSION_NAME}", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                    val totalSpeed = tasks.filter { it.status == com.downloadsource.core.TaskStatus.Running }.sumOf { it.speed }
+                    Text(
+                        "${BuildConfig.CHANNEL.uppercase()} · v${BuildConfig.VERSION_NAME}" +
+                            if (totalSpeed > 0) " · ${String.format("%.1f", totalSpeed / 1024.0 / 1024.0)} MB/s" else "",
+                        color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall
+                    )
                 }
                 
                 if (isSelectionMode) {

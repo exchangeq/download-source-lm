@@ -139,20 +139,30 @@ class Segmenter(private val client: OkHttpClient) {
 
     // 修复：没有大小信息时的流式下载
     private suspend fun streamDownload(taskId: String, url: String, outFile: File, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
-        val req = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity").build()
-        val call = client.newCall(req)
-        activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
         val partFile = File(outFile.parentFile, ".${outFile.name}.part")
-        
+        val already = if (partFile.exists()) partFile.length() else 0L
+        val reqBuilder = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity")
+        if (already > 0) reqBuilder.header("Range", "bytes=$already-")
+        val call = client.newCall(reqBuilder.build())
+        activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
+
         try {
             withContext(Dispatchers.IO) {
                 call.execute().use { resp ->
-                    if (!resp.isSuccessful) error("HTTP ${resp.code}")
-                    val total = resp.header("Content-Length")?.toLongOrNull() ?: -1L
+                    if (!resp.isSuccessful && resp.code != 416) error("HTTP ${resp.code}")
+                    if (resp.code == 416 && already > 0) {
+                        // 服务器认为已经下完，直接收尾
+                        val t = resp.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: already
+                        onTick(t, t, 0L, emptyList())
+                    } else {
+                    // 200 表示服务端忽略 Range，必须从头覆盖写
+                    val appendMode = already > 0 && resp.code == 206
+                    val baseOffset = if (appendMode) already else 0L
+                    val total = resp.header("Content-Length")?.toLongOrNull()?.let { if (appendMode) it + already else it } ?: -1L
                     resp.body?.byteStream()?.use { ins ->
-                        partFile.outputStream().use { out ->
+                        java.io.FileOutputStream(partFile, appendMode).use { out ->
                             val buf = ByteArray(1024 * 1024)
-                            var downloaded = 0L
+                            var downloaded = baseOffset
                             var lastTick = System.currentTimeMillis()
                             while (true) {
                                 if (!isActive) break
@@ -168,6 +178,7 @@ class Segmenter(private val client: OkHttpClient) {
                             }
                             out.fd.sync()
                         }
+                    }
                     }
                 }
             }
