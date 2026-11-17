@@ -4,10 +4,19 @@ import android.content.Context
 import com.downloadsource.storage.BrowserPrefs
 import java.net.URLEncoder
 
-enum class SearchEngine(val displayName: String, val baseUrl: String, val homeUrl: String) {
-    BING("Bing", "https://www.bing.com/search?q=", "https://www.bing.com"),
-    BAIDU("Baidu", "https://m.baidu.com/s?word=", "https://m.baidu.com"),
-    GOOGLE("Google", "https://www.google.com/search?q=", "https://www.google.com");
+enum class SearchEngine(val displayName: String, val baseUrl: String, val homeUrl: String, val region: String = "国际") {
+    BAIDU("Baidu", "https://m.baidu.com/s?word=", "https://m.baidu.com", "国内"),
+    BING("Bing", "https://www.bing.com/search?q=", "https://cn.bing.com", "国内"),
+    SOGOU("Sogou", "https://www.sogou.com/web?query=", "https://www.sogou.com", "国内"),
+    Q360("360搜索", "https://m.so.com/s?q=", "https://m.so.com", "国内"),
+    SHENMA("神马", "https://m.sm.cn/s?q=", "https://m.sm.cn", "国内"),
+    GOOGLE("Google", "https://www.google.com/search?q=", "https://www.google.com", "国际"),
+    DUCKDUCKGO("DuckDuckGo", "https://duckduckgo.com/?q=", "https://duckduckgo.com", "国际"),
+    YANDEX("Yandex", "https://yandex.com/search/?text=", "https://yandex.com", "国际"),
+    BRAVE("Brave", "https://search.brave.com/search?q=", "https://search.brave.com", "国际"),
+    STARTPAGE("Startpage", "https://www.startpage.com/sp/search?query=", "https://www.startpage.com", "国际");
+
+    val host: String get() = homeUrl.substringAfter("://").substringBefore('/')
 
     fun search(keyword: String): String =
         baseUrl + URLEncoder.encode(keyword, "UTF-8").replace("+", "%20")
@@ -15,7 +24,7 @@ enum class SearchEngine(val displayName: String, val baseUrl: String, val homeUr
     companion object {
         fun getCurrent(ctx: Context): SearchEngine {
             val name = BrowserPrefs.getEngine(ctx)
-            return entries.firstOrNull { it.displayName.equals(name, true) } ?: BING
+            return entries.firstOrNull { it.displayName.equals(name, true) || it.name.equals(name, true) } ?: BAIDU
         }
 
         /**

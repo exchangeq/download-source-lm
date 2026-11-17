@@ -33,6 +33,15 @@ class GlobalRateLimiter(private val permitsPerSecond: Long) {
 }
 
 class Segmenter(private val client: OkHttpClient) {
+    /**
+     * 分片专用客户端：强制 HTTP/1.1。
+     * 多数 CDN 在 HTTP/2 下把 40+ 个 Range 请求复用同一条 TCP，
+     * 会受单连接窗口/流控限制，实测只有几十 KB/s；
+     * 改成一请求一连接后每路都能吃满自己的带宽，这是「下载慢」最常见的原因。
+     */
+    private val fastClient = client.newBuilder()
+        .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
+        .build()
     private val activeCalls = ConcurrentHashMap<String, MutableList<okhttp3.Call>>()
 
     fun cancelTask(taskId: String) {
@@ -54,14 +63,17 @@ class Segmenter(private val client: OkHttpClient) {
         }
         
         // 32 路并发抓取；按 1MB/片下限收敛，避免碎成几万个小块
-        val maxBySize = (total / (1L shl 20)).toInt().coerceAtLeast(1)
+        val maxBySize = (total / (512L shl 10)).toInt().coerceAtLeast(1)
         // 不限速时大文件自动加路数（8MB 以上至少 24 路），小文件保持轻量
         val autoParts = when {
+            total > 1024L shl 20 -> 64
+            total > 256L shl 20 -> 56
+            total > 128L shl 20 -> 48
             total > 64L shl 20 -> 32
             total > 8L shl 20 -> maxOf(parts, 24)
             else -> parts
         }
-        val n = if (supportsRange && total > 2L shl 20) autoParts.coerceIn(1, 32).coerceAtMost(maxBySize) else 1
+        val n = if (supportsRange && total > 2L shl 20) autoParts.coerceIn(1, 64).coerceAtMost(maxBySize) else 1
         val downloaded = AtomicLong(0)
         val rateLimiter = GlobalRateLimiter(if (speedLimitKb > 0) speedLimitKb * 1024 else 0)
 
@@ -109,11 +121,21 @@ class Segmenter(private val client: OkHttpClient) {
         // 1. 尝试 HEAD
         try {
             val headReq = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity").head().build()
-            client.newCall(headReq).execute().use { resp ->
+            fastClient.newCall(headReq).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val len = resp.header("Content-Length")?.toLongOrNull() ?: -1L
                     val range = resp.header("Accept-Ranges")?.contains("bytes", true) == true
-                    if (len > 0) return@withContext Pair(len, range)
+                    // 很多 CDN 不在 HEAD 里声明 Accept-Ranges，但实际支持；len 已知时用 0-0 验证
+                    if (len > 0 && range) return@withContext Pair(len, true)
+                    if (len > 0) {
+                        val verify = runCatching {
+                            fastClient.newCall(
+                                Request.Builder().url(url).headers(headers)
+                                    .header("Range", "bytes=0-0").header("Accept-Encoding", "identity").build()
+                            ).execute().use { r -> r.code == 206 }
+                        }.getOrDefault(false)
+                        return@withContext Pair(len, verify)
+                    }
                 }
             }
         } catch (e: Exception) {}
@@ -121,7 +143,7 @@ class Segmenter(private val client: OkHttpClient) {
         // 2. 尝试 GET Range: 0-0
         try {
             val rangeReq = Request.Builder().url(url).headers(headers).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").build()
-            client.newCall(rangeReq).execute().use { resp ->
+            fastClient.newCall(rangeReq).execute().use { resp ->
                 if (resp.code == 206) {
                     val contentRange = resp.header("Content-Range")
                     val len = contentRange?.substringAfter("/")?.toLongOrNull() ?: -1L
@@ -143,7 +165,7 @@ class Segmenter(private val client: OkHttpClient) {
         val already = if (partFile.exists()) partFile.length() else 0L
         val reqBuilder = Request.Builder().url(url).headers(headers).header("Accept-Encoding", "identity")
         if (already > 0) reqBuilder.header("Range", "bytes=$already-")
-        val call = client.newCall(reqBuilder.build())
+        val call = fastClient.newCall(reqBuilder.build())
         activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
 
         try {
@@ -161,7 +183,7 @@ class Segmenter(private val client: OkHttpClient) {
                     val total = resp.header("Content-Length")?.toLongOrNull()?.let { if (appendMode) it + already else it } ?: -1L
                     resp.body?.byteStream()?.use { ins ->
                         java.io.FileOutputStream(partFile, appendMode).use { out ->
-                            val buf = ByteArray(1024 * 1024)
+                            val buf = ByteArray(4 * 1024 * 1024)
                             var downloaded = baseOffset
                             var lastTick = System.currentTimeMillis()
                             while (true) {
@@ -214,7 +236,7 @@ class Segmenter(private val client: OkHttpClient) {
             .header("Range", "bytes=$start-$end")
             .header("Accept-Encoding", "identity")
             .build()
-        val call = client.newCall(req)
+        val call = fastClient.newCall(req)
         activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
         
         try {
@@ -230,7 +252,7 @@ class Segmenter(private val client: OkHttpClient) {
                 RandomAccessFile(file, "rw").use { raf ->
                     raf.seek(start)
                     resp.body?.byteStream()?.use { ins ->
-                        val buf = ByteArray(1024 * 1024)
+                        val buf = ByteArray(4 * 1024 * 1024)
                         while (true) {
                             if (!currentCoroutineContext().isActive) break
                             val r = ins.read(buf)
@@ -240,7 +262,6 @@ class Segmenter(private val client: OkHttpClient) {
                             rateLimiter.acquire(r.toLong())
                         }
                     }
-                    raf.fd.sync()
                 }
             }
         } finally {
@@ -283,7 +304,7 @@ class Segmenter(private val client: OkHttpClient) {
                             try {
                                 val rb = Request.Builder().url(segment.url).headers(headers)
                                 segment.range?.let { r -> rb.header("Range", "bytes=$r") }
-                                val call = client.newCall(rb.build())
+                                val call = fastClient.newCall(rb.build())
                                 callRef = call
                                 activeCalls.getOrPut(taskId) { java.util.Collections.synchronizedList(mutableListOf<okhttp3.Call>()) }.add(call)
                                 call.execute().use { resp ->
@@ -326,7 +347,7 @@ class Segmenter(private val client: OkHttpClient) {
     }
 
     private suspend fun fetchText(url: String, headers: okhttp3.Headers): String = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+        fastClient.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
     }
 
     /** 直播 HLS：滚动刷新播放列表，增量追帧并落盘，结束后合成 mp4 */
@@ -361,7 +382,7 @@ class Segmenter(private val client: OkHttpClient) {
                                 try {
                                     val rb = Request.Builder().url(seg.url).headers(headers)
                                     seg.range?.let { rb.header("Range", "bytes=$it") }
-                                    client.newCall(rb.build()).execute().use { r ->
+                                    fastClient.newCall(rb.build()).execute().use { r ->
                                         if (!r.isSuccessful) error("分片 HTTP ${r.code}")
                                         var bytes = r.body?.bytes() ?: ByteArray(0)
                                         if (seg.key != null && seg.iv != null) bytes = decryptAES(bytes, seg.key, seg.iv)
@@ -405,7 +426,7 @@ class Segmenter(private val client: OkHttpClient) {
         if (visited.contains(url)) return@withContext emptyList()
         visited.add(url)
         val text = runCatching {
-            client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+            fastClient.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
         }.getOrDefault("")
         if (text.isBlank()) return@withContext emptyList()
         val lines = text.lines()
@@ -445,7 +466,7 @@ class Segmenter(private val client: OkHttpClient) {
                             val absKey = resolveUrl(url, keyUri)
                             currentKey = keyCache.getOrPut(absKey) {
                                 runCatching {
-                                    client.newCall(Request.Builder().url(absKey).headers(headers).build()).execute().use { it.body?.bytes() ?: ByteArray(0) }
+                                    fastClient.newCall(Request.Builder().url(absKey).headers(headers).build()).execute().use { it.body?.bytes() ?: ByteArray(0) }
                                 }.getOrDefault(ByteArray(0))
                             }
                             currentIv = if (ivStr != null) hexStringToByteArray(ivStr) else null
@@ -480,7 +501,7 @@ class Segmenter(private val client: OkHttpClient) {
         // fMP4 初始化段（EXT-X-MAP）放在最前，否则合并后无法播放
         if (mapUri != null) {
             runCatching {
-                client.newCall(Request.Builder().url(mapUri!!).headers(headers).build()).execute().use { resp ->
+                fastClient.newCall(Request.Builder().url(mapUri!!).headers(headers).build()).execute().use { resp ->
                     resp.body?.bytes()?.let { bytes ->
                         result.add(0, TsSegment(mapUri!!, null, null, null, bytes))
                     }
@@ -515,7 +536,7 @@ class Segmenter(private val client: OkHttpClient) {
 
     private suspend fun downloadDash(taskId: String, url: String, outFile: File, parts: Int, headers: okhttp3.Headers, onTick: (Long, Long, Long, List<Float>) -> Unit): File = coroutineScope {
         val xml = withContext(Dispatchers.IO) {
-            client.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
+            fastClient.newCall(Request.Builder().url(url).headers(headers).build()).execute().use { it.body?.string() ?: "" }
         }
         if (xml.isBlank() || !xml.contains("<MPD")) error("MPD 拉取失败 (´･_･`)")
 
@@ -545,7 +566,7 @@ class Segmenter(private val client: OkHttpClient) {
                 if (track.initUrl != null) {
                     val f = File(dir, "init.mp4")
                     if (!f.exists() || f.length() == 0L) {
-                        client.newCall(Request.Builder().url(track.initUrl).headers(headers).build()).execute().use { r ->
+                        fastClient.newCall(Request.Builder().url(track.initUrl).headers(headers).build()).execute().use { r ->
                             if (r.isSuccessful) f.writeBytes(r.body?.bytes() ?: ByteArray(0)) else error("init 分片 HTTP ${r.code}")
                         }
                     }
@@ -559,7 +580,7 @@ class Segmenter(private val client: OkHttpClient) {
                                 var attempt = 0
                                 while (attempt < 4) {
                                     try {
-                                        client.newCall(Request.Builder().url(segUrl).headers(headers).build()).execute().use { r ->
+                                        fastClient.newCall(Request.Builder().url(segUrl).headers(headers).build()).execute().use { r ->
                                             if (!r.isSuccessful) error("分片 HTTP ${r.code}")
                                             val bytes = r.body?.bytes() ?: ByteArray(0)
                                             part.writeBytes(bytes)

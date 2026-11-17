@@ -43,6 +43,7 @@ import com.downloadsource.core.DownloadManager
 import com.downloadsource.core.LocalWebServer
 import com.downloadsource.core.UpdateManager
 import com.downloadsource.storage.BrowserPrefs
+import com.downloadsource.utils.SearchEngine
 import com.downloadsource.storage.DirStore
 import com.downloadsource.ui.*
 import com.downloadsource.utils.PoemEasterEgg
@@ -68,6 +69,7 @@ fun SettingsScreen(onClose: () -> Unit) {
     // 各状态
     var themeStyle by remember { mutableIntStateOf(ThemeStore.getThemeStyle(ctx)) }
     var engine by remember { mutableStateOf(BrowserPrefs.getEngine(ctx)) }
+    var browserUi by remember { mutableIntStateOf(BrowserPrefs.getBrowserUi(ctx)) }
     var snifferType by remember { mutableIntStateOf(BrowserPrefs.getSnifferType(ctx)) }
     var currentLock by remember { mutableStateOf(ThemeStore.getLockPassword(ctx)) }
     var showPwdDialog by remember { mutableStateOf(false) }
@@ -134,13 +136,30 @@ fun SettingsScreen(onClose: () -> Unit) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("搜索引擎", color = palette.onSurface, modifier = Modifier.weight(1f))
                 }
+                SearchEngine.entries.chunked(3).forEach { rowEngines ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        rowEngines.forEach { e ->
+                            Box(Modifier.weight(1f).clip(RoundedCornerShape(50))
+                                .background(if (engine == e.displayName) Brush.linearGradient(palette.primary) else Brush.linearGradient(listOf(palette.surface, palette.surface)))
+                                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(50))
+                                .clickable { engine = e.displayName; BrowserPrefs.setEngine(ctx, e.displayName) }.padding(horizontal = 8.dp, vertical = 8.dp)) {
+                                Text(e.displayName, color = if (engine == e.displayName) Color.White else palette.onSurface, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("浏览器界面样式", color = palette.onSurface, modifier = Modifier.weight(1f))
+                }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("Bing", "Baidu", "Google").forEach { e ->
-                        Box(Modifier.clip(RoundedCornerShape(50))
-                            .background(if (engine == e) Brush.linearGradient(palette.primary) else Brush.linearGradient(listOf(palette.surface, palette.surface)))
+                    listOf("紧凑", "圆润", "极简").forEachIndexed { index, name ->
+                        Box(Modifier.weight(1f).clip(RoundedCornerShape(50))
+                            .background(if (browserUi == index) Brush.linearGradient(palette.primary) else Brush.linearGradient(listOf(palette.surface, palette.surface)))
                             .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(50))
-                            .clickable { engine = e; BrowserPrefs.setEngine(ctx, e) }.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                            Text(e, color = if (engine == e) Color.White else palette.onSurface, style = MaterialTheme.typography.bodySmall)
+                            .clickable { browserUi = index; BrowserPrefs.setBrowserUi(ctx, index) }.padding(horizontal = 8.dp, vertical = 8.dp)) {
+                            Text(name, color = if (browserUi == index) Color.White else palette.onSurface, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }

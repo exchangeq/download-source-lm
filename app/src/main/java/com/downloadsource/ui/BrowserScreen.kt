@@ -68,6 +68,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
@@ -159,7 +160,12 @@ fun BrowserScreen(
     var fileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
 
     var pageError by remember { mutableStateOf<String?>(null) }
+    val uiStyle = remember { BrowserPrefs.getUiStyle(ctx) }
+    var blockBaidu by remember { mutableStateOf(BrowserPrefs.blockBaidu(ctx)) }
+    var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
+    var browserUi by remember { mutableIntStateOf(BrowserPrefs.getBrowserUi(ctx)) }
+    var showEnginePicker by remember { mutableStateOf(false) }
     val sniffedUrls = remember { mutableStateListOf<WebInterceptor.SniffedMedia>() }
     val webInterceptor = remember { WebInterceptor() }
     val currentTab = { tabs.firstOrNull { it.id == activeId } }
@@ -237,6 +243,14 @@ fun BrowserScreen(
                 super.onPageStarted(view, url, favicon)
                 pageLoading = true
                 pageError = null
+                if (url != null && blockBaidu) {
+                    val host = SiteScriptStore.hostOf(url)
+                    if (host.endsWith("baidu.com") && !lastHost.endsWith("baidu.com")) {
+                        view?.stopLoading()
+                        android.widget.Toast.makeText(ctx, "已拦截跳转到百度", android.widget.Toast.LENGTH_SHORT).show()
+                        return
+                    }
+                }
                 if (url != null && url != "about:blank") {
                     if (!addressFocused) urlInput = url
                     syncTab(url)
@@ -250,6 +264,7 @@ fun BrowserScreen(
                 progress = 100
                 if (url != null) {
                     syncTab(url)
+                    lastHost = SiteScriptStore.hostOf(url)
                     if (!addressFocused) urlInput = url
                     BrowserHistoryStore.addHistory(ctx, url)
                 }
@@ -267,6 +282,15 @@ fun BrowserScreen(
                 rebuildTick += 1
                 android.widget.Toast.makeText(ctx, "渲染进程被系统回收，已重建页面", android.widget.Toast.LENGTH_SHORT).show()
                 return true
+            }
+
+            override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
+                val target = request.url.toString()
+                if (blockBaidu && SiteScriptStore.hostOf(target).endsWith("baidu.com") && !lastHost.endsWith("baidu.com")) {
+                    android.widget.Toast.makeText(ctx, "已拦截跳转到百度", android.widget.Toast.LENGTH_SHORT).show()
+                    return true
+                }
+                return false
             }
 
             override fun onReceivedSslError(view: WebView?, handler: android.webkit.SslErrorHandler?, error: android.net.http.SslError?) {
@@ -318,6 +342,7 @@ fun BrowserScreen(
             override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean {
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
                 val tmp = WebView(ctx)
+                tmp.settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx))
                 tmp.webViewClient = object : android.webkit.WebViewClient() {
                     override fun shouldOverrideUrlLoading(v: WebView, req: android.webkit.WebResourceRequest): Boolean {
                         val target = req.url.toString()
@@ -479,7 +504,7 @@ fun BrowserScreen(
                     .then(if (fullscreen) Modifier.height(0.dp).clipToBounds() else Modifier),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
+                if (uiStyle == 0) Box(
                     Modifier.clip(RoundedCornerShape(12.dp)).clickable { showTabs = true }
                         .background(palette.surface).padding(horizontal = 10.dp, vertical = 8.dp)
                 ) {
@@ -491,11 +516,11 @@ fun BrowserScreen(
                 }
                 Spacer(Modifier.width(6.dp))
                 Box(
-                    Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(22.dp))
+                    Modifier.weight(1f).height(if (browserUi == 1) 50.dp else if (browserUi == 2) 38.dp else 44.dp).clip(RoundedCornerShape(if (browserUi == 1) 25.dp else if (browserUi == 2) 19.dp else 22.dp))
                         .background(palette.surface)
-                        .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), palette.onSurface.copy(alpha = 0.12f))), RoundedCornerShape(22.dp))
+                        .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), palette.onSurface.copy(alpha = 0.12f))), RoundedCornerShape(if (browserUi == 1) 25.dp else if (browserUi == 2) 19.dp else 22.dp))
                 ) {
-                    Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().height(if (browserUi == 1) 50.dp else if (browserUi == 2) 38.dp else 44.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Search, null, tint = palette.onSurfaceDim, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                         BasicTextField(
@@ -528,6 +553,7 @@ fun BrowserScreen(
                         ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "前往", tint = palette.primary.first(), modifier = Modifier.size(16.dp)) }
                     }
                 }
+                if (browserUi != 2) {
                 Spacer(Modifier.width(6.dp))
                 IconButton(
                     onClick = {
@@ -540,20 +566,15 @@ fun BrowserScreen(
                     val marked = BrowserHistoryStore.isBookmarked(ctx, webView.url ?: "")
                     Icon(if (marked) Icons.Default.Star else Icons.Default.StarBorder, "收藏", tint = if (marked) palette.primary.first() else palette.onSurfaceDim, modifier = Modifier.size(20.dp))
                 }
+                }
+                if (uiStyle == 0) {
                 Spacer(Modifier.width(6.dp))
                 Box(
-                    Modifier.clip(RoundedCornerShape(12.dp)).clickable {
-                        val next = when (engine) {
-                            SearchEngine.BING -> SearchEngine.BAIDU
-                            SearchEngine.BAIDU -> SearchEngine.GOOGLE
-                            SearchEngine.GOOGLE -> SearchEngine.BING
-                        }
-                        engine = next
-                        BrowserPrefs.setEngine(ctx, next.displayName)
-                        android.widget.Toast.makeText(ctx, "搜索引擎：${next.displayName}", android.widget.Toast.LENGTH_SHORT).show()
-                    }.background(palette.surface).padding(horizontal = 8.dp, vertical = 8.dp)
+                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { showEnginePicker = true }
+                        .background(palette.surface).padding(horizontal = 8.dp, vertical = 8.dp)
                 ) {
                     Text(engine.displayName, color = palette.primary.first(), fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
+                }
                 }
             }
 
@@ -604,7 +625,12 @@ fun BrowserScreen(
             }
 
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+                Modifier.then(
+                    when (uiStyle) {
+                        2 -> Modifier.fillMaxWidth(0.82f).align(Alignment.CenterHorizontally).padding(vertical = 6.dp)
+                        else -> Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
+                    }
+                )
                     .clip(RoundedCornerShape(28.dp)).background(palette.surface)
                     .padding(vertical = 6.dp)
                     .then(if (fullscreen) Modifier.height(0.dp).clipToBounds() else Modifier),
@@ -690,6 +716,10 @@ fun BrowserScreen(
                 MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) }
                 MenuItem("数据管理", Icons.Default.Delete, palette) { showMenu = false; showDataPanel = true }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("拦截跳转百度", color = palette.onSurface, modifier = Modifier.weight(1f))
+                    Switch(checked = blockBaidu, onCheckedChange = { blockBaidu = it; BrowserPrefs.setBlockBaidu(ctx, it) })
+                }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("桌面版网站", color = palette.onSurface, modifier = Modifier.weight(1f))
                     Switch(checked = desktopMode, onCheckedChange = {
@@ -874,6 +904,35 @@ fun BrowserScreen(
                                 android.widget.Toast.makeText(ctx, "已复制链接", android.widget.Toast.LENGTH_SHORT).show()
                             }) { Text("复制") }
                         }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showEnginePicker) {
+        Dialog(onDismissRequest = { showEnginePicker = false }) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
+                Text("选择搜索引擎", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                Spacer(Modifier.height(4.dp))
+                Text("国内 / 国际共 ${SearchEngine.entries.size} 个，选择后地址栏搜索立即生效", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.weight(1f, fill = false)) {
+                    items(SearchEngine.entries.size) { idx ->
+                        val e = SearchEngine.entries[idx]
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                                engine = e
+                                BrowserPrefs.setEngine(ctx, e.displayName)
+                                showEnginePicker = false
+                                android.widget.Toast.makeText(ctx, "搜索引擎：${e.displayName}", android.widget.Toast.LENGTH_SHORT).show()
+                            }.padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(e.displayName, color = if (engine == e) palette.primary.first() else palette.onSurface, modifier = Modifier.weight(1f))
+                            Text(e.region, color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                            if (engine == e) Text(" · 当前", color = palette.primary.first(), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }

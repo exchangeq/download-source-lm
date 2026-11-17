@@ -19,6 +19,18 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object DownloadManager {
+    /** DNS 结果本地缓存 5 分钟：多线程分片不再各自解析域名，建连更快 */
+    private object CachedDns : okhttp3.Dns {
+        private val cache = java.util.concurrent.ConcurrentHashMap<String, Pair<List<java.net.InetAddress>, Long>>()
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            val now = System.currentTimeMillis()
+            cache[hostname]?.takeIf { now - it.second < 5 * 60 * 1000L }?.let { return it.first }
+            val fresh = okhttp3.Dns.SYSTEM.lookup(hostname)
+            cache[hostname] = fresh to now
+            return fresh
+        }
+    }
+
     // 连接池与调度器按大文件多分片场景配置，避免每主机 5 路并发把线程数限制成摆设
     val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -28,8 +40,9 @@ object DownloadManager {
         .retryOnConnectionFailure(true)
         .followRedirects(true)
         .followSslRedirects(true)
-        .connectionPool(okhttp3.ConnectionPool(48, 8, TimeUnit.MINUTES))
-        .dispatcher(Dispatcher().apply { maxRequests = 128; maxRequestsPerHost = 64 })
+        .connectionPool(okhttp3.ConnectionPool(160, 15, TimeUnit.MINUTES))
+        .dispatcher(Dispatcher().apply { maxRequests = 512; maxRequestsPerHost = 256 })
+        .dns(CachedDns)
         .build()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
