@@ -339,3 +339,19 @@
 ### 承接
 
 - HLS 直播追帧、HLS 跨次续传、DASH 全模板支持、分片进度详情、毛玻璃主题、文件名三路解析、60+ 格式与魔数纠正
+
+## v8.1.0-lm
+
+### 浏览器会话共享（私有源/登录态下载）
+
+- 新增 `DownloadManager.cookieHeader()`：从 WebView 的 CookieManager 取当前站点 Cookie
+- 任务没有显式 Cookie 时自动注入 `Cookie` 请求头，需要登录的私有直链可直接下载
+- 主线程安全：非 UI 线程通过 Handler + CountDownLatch 取 Cookie，2 秒超时降级为无 Cookie 继续
+- 注入后的 Cookie 会写回任务 headers，暂停后继续、失败重试都保持登录态
+- HLS/DASH 的分片、密钥、init 段请求同样携带该 Cookie
+- 任务已有自定义 Cookie 时以任务设置为准，不覆盖
+
+### UI
+
+- 下载卡片正文显示完成百分比（下载中），更直观
+- 详情面板补充来源域名，便于判断资源出处

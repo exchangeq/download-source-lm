@@ -100,7 +100,7 @@ fun DownloadCard(
                         TaskStatus.Failed -> "失败了: $displayError (´･_･`)"
                         TaskStatus.Completed -> "下载完成啦 (●'◡'●)"
                         TaskStatus.Paused -> "已暂停 (￣▽￣) · ${task.sizeText}"
-                        else -> "${task.sizeText} ${if (speedStr.isNotEmpty()) "· $speedStr" else ""}"
+                        else -> "${(task.fraction * 100).toInt()}% · ${task.sizeText} ${if (speedStr.isNotEmpty()) "· $speedStr" else ""}"
                     },
                     color = if (task.status == TaskStatus.Failed) Color.Red else palette.onSurfaceDim,
                     style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -160,6 +160,7 @@ fun DownloadCard(
                 }
                 Text(
                     buildString {
+                        task.url.let { u -> runCatching { java.net.URI(u).host }.getOrNull()?.let { append("$it · ") } }
                         append("线程 ${task.threads}")
                         append(" · ${task.sizeText}")
                         if (task.speedText.isNotEmpty()) append(" · ${task.speedText}")

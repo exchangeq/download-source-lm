@@ -127,6 +127,25 @@ object DownloadManager {
         return name
     }
 
+    /** 复用浏览器 Cookie：需要登录/鉴权的私有源，直接带上当前会话 */
+    fun cookieHeader(url: String): String? {
+        return try {
+            val cm = android.webkit.CookieManager.getInstance()
+            var cookies: String? = null
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                cookies = runCatching { cm.getCookie(url) }.getOrNull()
+            } else {
+                val latch = java.util.concurrent.CountDownLatch(1)
+                Handler(Looper.getMainLooper()).post {
+                    cookies = runCatching { cm.getCookie(url) }.getOrNull()
+                    latch.countDown()
+                }
+                latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            cookies?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) { null }
+    }
+
     /** 按文件头纠正扩展名：服务器给错后缀/没给后缀时，落地文件仍能被系统正确识别 */
     private fun correctExtensionByMagic(file: File): File {
         if (!file.exists() || file.length() < 12) return file
@@ -227,10 +246,16 @@ object DownloadManager {
         updateTaskState(context, id) { it.copy(status = TaskStatus.Running, error = null) }
         DownloadService.start(context)
 
+        // 登录态共享：任务没有显式 Cookie 时，取浏览器里该站点的 Cookie
+        val effectiveHeaders = if (t.headers.keys.any { it.equals("Cookie", true) }) t.headers else {
+            cookieHeader(t.url)?.let { t.headers + ("Cookie" to it) } ?: t.headers
+        }
+        if (effectiveHeaders != t.headers) updateTaskState(context, id) { it.copy(headers = effectiveHeaders) }
+
         jobs[id] = scope.launch {
             try {
                 val outFile = File(t.dirPath, t.fileName)
-                val out = segmenter.download(t.id, t.url, outFile, t.threads, t.speedLimitKb, t.headers) { d, total, speed, segs ->
+                val out = segmenter.download(t.id, t.url, outFile, t.threads, t.speedLimitKb, effectiveHeaders) { d, total, speed, segs ->
                     _tasks.update { list ->
                         list.map {
                             if (it.id == id) it.copy(downloadedBytes = d, totalBytes = if (total > 0) total else it.totalBytes, speed = speed, segments = segs) else it
