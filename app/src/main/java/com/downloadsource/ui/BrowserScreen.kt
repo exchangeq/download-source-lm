@@ -1,5 +1,7 @@
 package com.downloadsource.ui
 
+import com.downloadsource.storage.RenderCompatStore
+
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
@@ -14,6 +16,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -70,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
@@ -154,6 +158,8 @@ fun BrowserScreen(
     var customCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var fileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
 
+    var pageError by remember { mutableStateOf<String?>(null) }
+    var addressFocused by remember { mutableStateOf(false) }
     val sniffedUrls = remember { mutableStateListOf<WebInterceptor.SniffedMedia>() }
     val webInterceptor = remember { WebInterceptor() }
     val currentTab = { tabs.firstOrNull { it.id == activeId } }
@@ -192,10 +198,29 @@ fun BrowserScreen(
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
             setBackgroundColor(android.graphics.Color.WHITE)
+            settings.setNeedInitialFocus(false)
+            settings.setSupportMultipleWindows(true)
+            // 先把渲染优先级拉高：
+            setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+            val bootHost = SiteScriptStore.hostOf(urlInput)
+            if (RenderCompatStore.isSoftware(ctx, bootHost)) setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         }
     }
+
+    val doGo = {
+        val target = SearchEngine.normalize(ctx, urlInput)
+        if (target.isNotBlank()) {
+            urlInput = target
+            (ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(webView.windowToken, 0)
+            webView.requestFocus()
+            webView.loadUrl(target)
+        }
+    }
+
 
     fun syncTab(url: String?) {
         val tab = currentTab() ?: return
@@ -211,8 +236,9 @@ fun BrowserScreen(
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 pageLoading = true
+                pageError = null
                 if (url != null && url != "about:blank") {
-                    urlInput = url
+                    if (!addressFocused) urlInput = url
                     syncTab(url)
                     BrowserHistoryStore.saveSession(ctx, url)
                 }
@@ -224,7 +250,7 @@ fun BrowserScreen(
                 progress = 100
                 if (url != null) {
                     syncTab(url)
-                    urlInput = url
+                    if (!addressFocused) urlInput = url
                     BrowserHistoryStore.addHistory(ctx, url)
                 }
                 view?.evaluateJavascript(webInterceptor.injectionScript, null)
@@ -260,7 +286,7 @@ fun BrowserScreen(
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame == true) {
                     pageLoading = false
-                    android.widget.Toast.makeText(ctx, "加载失败：${error?.description ?: ""}", android.widget.Toast.LENGTH_SHORT).show()
+                    pageError = error?.description?.toString() ?: "未知错误"
                 }
             }
 
@@ -465,47 +491,54 @@ fun BrowserScreen(
                 }
                 Spacer(Modifier.width(6.dp))
                 Box(
-                    Modifier.weight(1f).clip(RoundedCornerShape(24.dp))
+                    Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(22.dp))
                         .background(palette.surface)
-                        .border(1.2.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.6f), Color.White.copy(alpha = 0.1f))), RoundedCornerShape(24.dp))
-                        .padding(horizontal = 14.dp, vertical = 9.dp)
+                        .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), palette.onSurface.copy(alpha = 0.12f))), RoundedCornerShape(22.dp))
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Search, null, tint = palette.onSurfaceDim, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                         BasicTextField(
                             value = urlInput,
                             onValueChange = { urlInput = it },
-                            textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodyMedium.fontSize),
+                            textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodyMedium.fontSize, lineHeight = MaterialTheme.typography.bodyMedium.fontSize),
                             cursorBrush = SolidColor(palette.primary.first()),
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                            keyboardActions = KeyboardActions(onGo = {
-                                val target = SearchEngine.normalize(ctx, urlInput)
-                                if (target.isNotBlank()) {
-                                    urlInput = target
-                                    (ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
-                                        as android.view.inputmethod.InputMethodManager)
-                                        .hideSoftInputFromWindow(webView.windowToken, 0)
-                                    webView.requestFocus()
-                                    webView.loadUrl(target)
+                            keyboardActions = KeyboardActions(onGo = { doGo() }),
+                            decorationBox = { inner ->
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (urlInput.isEmpty()) Text("搜索或输入网址", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                                    inner()
                                 }
-                            }),
-                            decorationBox = { inner -> if (urlInput.isEmpty()) Text("搜索或输入网址", color = palette.onSurfaceDim); inner() },
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(
-                            onClick = {
-                                val url = webView.url ?: return@IconButton
-                                if (BrowserHistoryStore.isBookmarked(ctx, url)) BrowserHistoryStore.removeBookmark(ctx, url)
-                                else BrowserHistoryStore.addBookmark(ctx, url, pageTitle)
                             },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            val marked = BrowserHistoryStore.isBookmarked(ctx, webView.url ?: "")
-                            Icon(if (marked) Icons.Default.Star else Icons.Default.StarBorder, "收藏", tint = if (marked) palette.primary.first() else palette.onSurfaceDim, modifier = Modifier.size(18.dp))
+                            modifier = Modifier.weight(1f).onFocusChanged { addressFocused = it.isFocused }
+                        )
+                        if (urlInput.isNotEmpty()) {
+                            Icon(
+                                Icons.Default.Close, "清空",
+                                tint = palette.onSurfaceDim,
+                                modifier = Modifier.size(18.dp).clickable { urlInput = "" }
+                            )
+                            Spacer(Modifier.width(6.dp))
                         }
+                        Box(
+                            Modifier.size(30.dp).clip(CircleShape).background(palette.primary.first().copy(alpha = 0.12f)).clickable { doGo() },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "前往", tint = palette.primary.first(), modifier = Modifier.size(16.dp)) }
                     }
+                }
+                Spacer(Modifier.width(6.dp))
+                IconButton(
+                    onClick = {
+                        val url = webView.url ?: return@IconButton
+                        if (BrowserHistoryStore.isBookmarked(ctx, url)) BrowserHistoryStore.removeBookmark(ctx, url)
+                        else BrowserHistoryStore.addBookmark(ctx, url, pageTitle)
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    val marked = BrowserHistoryStore.isBookmarked(ctx, webView.url ?: "")
+                    Icon(if (marked) Icons.Default.Star else Icons.Default.StarBorder, "收藏", tint = if (marked) palette.primary.first() else palette.onSurfaceDim, modifier = Modifier.size(20.dp))
                 }
                 Spacer(Modifier.width(6.dp))
                 Box(
@@ -543,7 +576,32 @@ fun BrowserScreen(
                 }
             }
 
-            AndroidView(factory = { webView }, modifier = Modifier.weight(1f).fillMaxWidth())
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
+                pageError?.let { err ->
+                    Column(
+                        Modifier.align(Alignment.Center).padding(24.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(palette.surface)
+                            .padding(20.dp)
+                    ) {
+                        Text("页面打不开", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                        Spacer(Modifier.height(6.dp))
+                        Text(err, color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(12.dp))
+                        Row {
+                            TextButton(onClick = { pageError = null; webView.reload() }) { Text("重试") }
+                            TextButton(onClick = {
+                                val host = SiteScriptStore.hostOf(webView.url ?: urlInput)
+                                val on = RenderCompatStore.toggle(ctx, host)
+                                pageError = null
+                                rebuildTick += 1
+                                android.widget.Toast.makeText(ctx, if (on) "已开启兼容渲染" else "已关闭兼容渲染", android.widget.Toast.LENGTH_SHORT).show()
+                            }) { Text(if (RenderCompatStore.isSoftware(ctx, SiteScriptStore.hostOf(webView.url ?: urlInput))) "关闭兼容渲染" else "兼容渲染") }
+                        }
+                    }
+                }
+            }
 
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
@@ -615,6 +673,17 @@ fun BrowserScreen(
                     showMenu = false
                     readerMode = !readerMode
                     webView.evaluateJavascript(WebScripts.readerMode, null)
+                }
+                MenuItem("兼容渲染（治黑屏）", Icons.Default.Layers, palette) {
+                    showMenu = false
+                    val host = SiteScriptStore.hostOf(webView.url ?: urlInput)
+                    if (host.isBlank()) {
+                        android.widget.Toast.makeText(ctx, "当前没有可设置的站点", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        val on = RenderCompatStore.toggle(ctx, host)
+                        rebuildTick += 1
+                        android.widget.Toast.makeText(ctx, if (on) "已对本站开启兼容渲染" else "已关闭本站兼容渲染", android.widget.Toast.LENGTH_SHORT).show()
+                    }
                 }
                 MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) }
                 MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) }
