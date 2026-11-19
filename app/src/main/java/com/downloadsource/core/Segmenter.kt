@@ -73,7 +73,11 @@ class Segmenter(private val client: OkHttpClient) {
             total > 8L shl 20 -> maxOf(parts, 24)
             else -> parts
         }
-        val n = if (supportsRange && total > 2L shl 20) autoParts.coerceIn(1, 64).coerceAtMost(maxBySize) else 1
+        var n = if (supportsRange && total > 2L shl 20) autoParts.coerceIn(1, 64).coerceAtMost(maxBySize) else 1
+        // 独家：并发标定——先用 4 路小 Range 请求实测真实带宽，再决定分片数
+        if (supportsRange && total > 8L shl 20 && speedLimitKb <= 0) {
+            n = calibrateParts(url, headers, total, n).coerceIn(1, 64).coerceAtMost(maxBySize)
+        }
         val downloaded = AtomicLong(0)
         val rateLimiter = GlobalRateLimiter(if (speedLimitKb > 0) speedLimitKb * 1024 else 0)
 
@@ -211,6 +215,51 @@ class Segmenter(private val client: OkHttpClient) {
             activeCalls[taskId]?.remove(call)
         }
     }
+
+    /**
+     * 并发标定（独家）：同时发 4 个 192KB 的 Range 请求，测聚合吞吐。
+     * 线路差（<500KB/s）就拉满 64 路抢带宽；线路好（>12MB/s）反而降到 32 路减少握手与调度开销。
+     * 任何异常一律回退默认分片数，绝不影响下载。
+     */
+    private suspend fun calibrateParts(url: String, headers: okhttp3.Headers, total: Long, expect: Int): Int =
+        withContext(Dispatchers.IO) {
+            runCatching<Int> {
+                val sample = 192L * 1024
+                if (total < sample * 8) return@runCatching expect
+                val workers = 4
+                val t0 = System.currentTimeMillis()
+                val got = (0 until workers).map { i ->
+                    async {
+                        val start = total / workers * i
+                        val end = (start + sample - 1).coerceAtMost(total - 1)
+                        val req = okhttp3.Request.Builder().url(url).headers(headers)
+                            .header("Range", "bytes=$start-$end").build()
+                        runCatching {
+                            fastClient.newCall(req).execute().use { resp ->
+                                if (!resp.isSuccessful) return@use 0L
+                                val ins = resp.body?.byteStream() ?: return@use 0L
+                                val buf = ByteArray(32 * 1024)
+                                var read = 0L
+                                while (read < sample) {
+                                    val r = ins.read(buf)
+                                    if (r <= 0) break
+                                    read += r
+                                }
+                                read
+                            }
+                        }.getOrDefault(0L)
+                    }
+                }.awaitAll().sum()
+                val ms = (System.currentTimeMillis() - t0).coerceAtLeast(50)
+                val bps = got * 1000.0 / ms
+                when {
+                    bps < 500_000 -> 64
+                    bps < 2_000_000 -> maxOf(expect, 48)
+                    bps > 12_000_000 -> minOf(expect, 32)
+                    else -> expect
+                }
+            }.getOrDefault(expect)
+        }
 
     private suspend fun retryDownloadRange(taskId: String, url: String, start: Long, end: Long, file: File, counter: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers, allow200: Boolean) {
         var attempt = 0
