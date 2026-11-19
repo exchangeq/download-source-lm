@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
         PyRuleEngine.init(this)
+        com.downloadsource.storage.UpgradeKeeper.run(this, BuildConfig.VERSION_NAME)
         setContent {
             val palette = rememberPalette()
             Box(Modifier.fillMaxSize().background(palette.background.first())) {

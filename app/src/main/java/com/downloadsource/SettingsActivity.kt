@@ -64,6 +64,25 @@ fun SettingsScreen(onClose: () -> Unit) {
     val ctx = LocalContext.current
     val palette = LocalPalette.current
     val scope = rememberCoroutineScope()
+    val restoreLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val tmp = java.io.File(ctx.cacheDir, "restore.zip")
+            runCatching {
+                ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { out -> input.copyTo(out) }
+                }
+            }
+            val ok = com.downloadsource.storage.BackupManager.restore(ctx, tmp)
+            tmp.delete()
+            Toast.makeText(
+                ctx,
+                if (ok) "恢复完成，请杀掉应用重新打开生效" else "恢复失败：文件不是 LM 备份包",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
     var checking by remember { mutableStateOf(false) }
     
     // 各状态
@@ -218,6 +237,19 @@ fun SettingsScreen(onClose: () -> Unit) {
                 SettingsRow("清空下载记录", "不删除本地文件", Icons.Default.Delete) {
                     DownloadManager.tasks.value.forEach { DownloadManager.remove(ctx, it.id) }
                     Toast.makeText(ctx, "记录已清空，雑魚~ (￣▽￣)", Toast.LENGTH_SHORT).show()
+                }
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                SettingsRow("备份设置与数据", "生成 zip 到下载目录", Icons.Default.CloudDownload) {
+                    val file = com.downloadsource.storage.BackupManager.export(ctx)
+                    Toast.makeText(
+                        ctx,
+                        if (file != null) "已备份：${file.name}" else "备份失败，请检查存储权限",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                SettingsRow("恢复备份", "选择 zip 后重启生效", Icons.Default.CloudUpload) {
+                    restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
                 }
             }
             
