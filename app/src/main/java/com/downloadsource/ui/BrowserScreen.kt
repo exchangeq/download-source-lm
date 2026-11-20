@@ -39,6 +39,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -797,31 +800,95 @@ fun BrowserScreen(
     }
 
     if (showTabs) {
-        Dialog(onDismissRequest = { showTabs = false }) {
-            Column(Modifier.fillMaxWidth().heightIn(max = 460.dp).clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
+        Dialog(onDismissRequest = { showTabs = false }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            Column(
+                Modifier.fillMaxSize().background(palette.background.first())
+                    .padding(horizontal = 14.dp).padding(top = 44.dp, bottom = 14.dp)
+            ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("标签页 ${tabs.size}", fontWeight = FontWeight.Bold, color = palette.onSurface, modifier = Modifier.weight(1f))
+                    Column(Modifier.weight(1f)) {
+                        Text("标签页总览", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = palette.onSurface)
+                        Text("${tabs.size} 个标签页 · 长按卡片可操作", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                    }
                     TextButton(onClick = {
                         val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
                         tabs.add(tab); activeId = tab.id; showTabs = false
                     }) { Text("新建") }
+                    TextButton(onClick = { showTabs = false }) { Text("完成") }
                 }
-                LazyColumn {
-                    items(tabs) { tab ->
-                        Row(Modifier.fillMaxWidth().combinedClickable(
-                            onClick = { activeId = tab.id; showTabs = false },
-                            onLongClick = { tabMenuId = tab.id }
-                        ).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(tab.title.ifBlank { tab.url }, color = if (tab.id == activeId) palette.primary.first() else palette.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                            IconButton(onClick = {
-                                tabs.remove(tab)
-                                if (tabs.isEmpty()) {
-                                    val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
-                                    tabs.add(fresh); activeId = fresh.id
-                                } else if (tab.id == activeId) {
-                                    activeId = tabs.first().id
-                                }
-                            }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "关闭", tint = palette.onSurfaceDim) }
+                Spacer(Modifier.height(10.dp))
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    gridItems(tabs, key = { it.id }) { tab ->
+                        val active = tab.id == activeId
+                        Column(
+                            Modifier.fillMaxWidth().height(150.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (active) palette.primary.first().copy(alpha = 0.14f) else palette.surface)
+                                .border(
+                                    width = if (active) 2.dp else 1.dp,
+                                    color = if (active) palette.primary.first() else palette.onSurface.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .combinedClickable(
+                                    onClick = { activeId = tab.id; showTabs = false },
+                                    onLongClick = { tabMenuId = tab.id }
+                                )
+                                .padding(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    if (active) "当前" else "${tabs.indexOf(tab) + 1}",
+                                    color = if (active) palette.primary.first() else palette.onSurfaceDim,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    Icons.Default.Close, "关闭标签页", tint = palette.onSurfaceDim,
+                                    modifier = Modifier.size(16.dp).clickable {
+                                        tabs.remove(tab)
+                                        if (tabs.isEmpty()) {
+                                            val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                                            tabs.add(fresh); activeId = fresh.id
+                                        } else if (tab.id == activeId) {
+                                            activeId = tabs.first().id
+                                        }
+                                    }
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                tab.title.ifBlank { "新标签页" },
+                                color = palette.onSurface, fontWeight = FontWeight.SemiBold,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                SiteScriptStore.hostOf(tab.url).ifBlank { tab.url },
+                                color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    item {
+                        Column(
+                            Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(16.dp))
+                                .background(palette.surface.copy(alpha = 0.6f))
+                                .clickable {
+                                    val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                                    tabs.add(tab); activeId = tab.id; showTabs = false
+                                },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.Add, "新建标签页", tint = palette.onSurfaceDim)
+                            Spacer(Modifier.height(6.dp))
+                            Text("新建标签页", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
