@@ -278,7 +278,11 @@ object DownloadManager {
                     }
                     DownloadService.updateProgress(context, t.fileName, d, total, speed)
                 }
-                val finalOut = correctExtensionByMagic(out)
+                var finalOut = correctExtensionByMagic(out)
+                // TS(M3U8 合并/DASH 某些源)统一重封装成标准 MP4，避免黑屏、无音轨
+                if (com.downloadsource.core.TsRemuxer.isTs(finalOut)) {
+                    finalOut = com.downloadsource.core.TsRemuxer.remux(finalOut) ?: finalOut
+                }
                 updateTaskState(context, id) { it.copy(status = TaskStatus.Completed, fileName = finalOut.name, downloadedBytes = maxOf(it.totalBytes, finalOut.length()), totalBytes = maxOf(it.totalBytes, finalOut.length()), speed = 0, outputPath = finalOut.absolutePath) }
 
                 if (out.name.endsWith(".apk", true)) {
