@@ -107,6 +107,7 @@ import com.downloadsource.storage.BrowserHistoryStore
 import com.downloadsource.storage.BrowserPrefs
 import com.downloadsource.storage.DirStore
 import com.downloadsource.storage.SiteScriptStore
+import com.downloadsource.utils.PyRuleEngine
 import com.downloadsource.utils.SearchEngine
 import com.downloadsource.utils.UserAgents
 import com.downloadsource.web.SafeWebViewClient
@@ -188,6 +189,8 @@ fun BrowserScreen(
     var pageError by remember { mutableStateOf<String?>(null) }
     val uiStyle = remember { BrowserPrefs.getUiStyle(ctx) }
     var blockBaidu by remember { mutableStateOf(BrowserPrefs.blockBaidu(ctx)) }
+    var adBlockOn by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.isEnabled(ctx)) }
+    var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
     var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
     var browserUi by remember { mutableIntStateOf(BrowserPrefs.getBrowserUi(ctx)) }
@@ -351,6 +354,15 @@ fun BrowserScreen(
 
             override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
                 val url = request.url.toString()
+                // 广告拦截：只掐广告/追踪域名，返回空响应，避免整站白屏
+                if (adBlockOn && url.startsWith("http") && PyRuleEngine.shouldBlock(url)) {
+                    com.downloadsource.storage.AdBlockStore.addBlocked(ctx)
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { adBlockedCount += 1 }
+                    return android.webkit.WebResourceResponse(
+                        "text/plain", "utf-8",
+                        java.io.ByteArrayInputStream(ByteArray(0))
+                    )
+                }
                 val ext = url.substringAfterLast('.', "").lowercase().substringBefore('?')
                 if (ext in listOf("mp4", "mp3", "m4a", "aac", "flac", "wav", "m3u8", "webm", "flv", "mov", "mkv", "ts", "apk", "zip", "rar", "7z", "pdf") && !url.contains("favicon")) {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -748,216 +760,141 @@ fun BrowserScreen(
     }
 
     if (showMenu) {
-        Dialog(onDismissRequest = { showMenu = false }) {
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 560.dp)
-                    .clip(RoundedCornerShape(20.dp)).background(palette.surface)
-                    .verticalScroll(rememberScrollState()).padding(vertical = 8.dp)
-            ) {
-                MenuItem("新标签页", Icons.Default.Add, palette) {
-                    val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
-                    tabs.add(tab); activeId = tab.id; showMenu = false
-                }
-                MenuItem("书签", Icons.Default.Star, palette) { showMenu = false; showBookmarks = true }
-                MenuItem("历史记录", Icons.Default.Search, palette) { showMenu = false; showHistory = true }
-                MenuItem("页内查找", Icons.Default.Search, palette) { showMenu = false; showFind = true }
-                MenuItem("浏览器标识 (UA)", Icons.Default.Layers, palette) { showMenu = false; showUa = true }
-                MenuItem("此站自定义 JS", Icons.Default.Add, palette) {
-                    showMenu = false
-                    val host = SiteScriptStore.hostOf(webView.url ?: "")
-                    siteScriptText = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
-                    showSiteScript = true
-                }
-                MenuItem(if (readerMode) "退出阅读模式" else "阅读模式", Icons.Default.Search, palette) {
-                    showMenu = false
-                    readerMode = !readerMode
-                    webView.evaluateJavascript(WebScripts.readerMode, null)
-                }
-                MenuItem("兼容渲染（治黑屏）", Icons.Default.Layers, palette) {
-                    showMenu = false
-                    val host = SiteScriptStore.hostOf(webView.url ?: urlInput)
-                    if (host.isBlank()) {
-                        android.widget.Toast.makeText(ctx, "当前没有可设置的站点", android.widget.Toast.LENGTH_SHORT).show()
-                    } else {
-                        val on = RenderCompatStore.toggle(ctx, host)
-                        rebuildTick += 1
-                        android.widget.Toast.makeText(ctx, if (on) "已对本站开启兼容渲染" else "已关闭本站兼容渲染", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }
-                MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) }
-                MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) }
-                MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) }
-                MenuItem("数据管理", Icons.Default.Delete, palette) { showMenu = false; showDataPanel = true }
-                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("拦截跳转百度", color = palette.onSurface, modifier = Modifier.weight(1f))
-                    Switch(checked = blockBaidu, onCheckedChange = { blockBaidu = it; BrowserPrefs.setBlockBaidu(ctx, it) })
-                }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("桌面版网站", color = palette.onSurface, modifier = Modifier.weight(1f))
-                    Switch(checked = desktopMode, onCheckedChange = {
-                        desktopMode = it
-                        BrowserPrefs.setDesktop(ctx, it)
-                        webView.settings.userAgentString = if (it) DESKTOP_UA else MOBILE_UA
-                        webView.reload()
-                    })
-                }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("文字缩放", color = palette.onSurface, modifier = Modifier.weight(1f))
-                    listOf(90, 100, 125, 150).forEach { z ->
-                        Text(
-                            "$z%",
-                            color = if (zoom == z) palette.primary.first() else palette.onSurfaceDim,
-                            fontWeight = if (zoom == z) FontWeight.Bold else FontWeight.Normal,
-                            modifier = Modifier.clickable {
-                                zoom = z; BrowserPrefs.setZoom(ctx, z); webView.settings.textZoom = z
-                            }.padding(horizontal = 6.dp)
-                        )
-                    }
+        Dialog(
+            onDismissRequest = { showMenu = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Column(Modifier.fillMaxSize().background(palette.background.first()).padding(top = 40.dp, bottom = 8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("菜单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = palette.onSurface, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { showMenu = false }) { Text("关闭") }
                 }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
-                MenuItem(if (fullscreen) "退出全屏" else "全屏浏览", Icons.Default.Layers, palette) { showMenu = false; fullscreen = !fullscreen }
-                MenuItem("复制当前网址", Icons.Default.Add, palette) {
-                    showMenu = false
-                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("url", webView.url ?: ""))
-                    android.widget.Toast.makeText(ctx, "网址已复制", android.widget.Toast.LENGTH_SHORT).show()
-                }
-                MenuItem("关闭全部标签", Icons.Default.Delete, palette) {
-                    showMenu = false
-                    tabs.clear()
-                    val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
-                    tabs.add(fresh)
-                    activeId = fresh.id
-                }
-                MenuItem("分享当前页", Icons.Default.Search, palette) { showMenu = false; sharePage(ctx, webView.url ?: "") }
-                MenuItem("用系统浏览器打开", Icons.Default.Refresh, palette) { showMenu = false; openExternal(ctx, webView.url ?: "") }
-                MenuItem("清除缓存与 Cookie", Icons.Default.Delete, palette) { showMenu = false; clearBrowserData(ctx, webView) }
-                MenuItem("关闭当前标签", Icons.Default.Close, palette) {
-                    showMenu = false
-                    val tab = currentTab()
-                    if (tab != null) {
-                        tabs.remove(tab)
-                        if (tabs.isEmpty()) {
-                            val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
-                            tabs.add(fresh); activeId = fresh.id
+                LazyColumn(Modifier.weight(1f)) {
+                    item { MenuItem("新标签页", Icons.Default.Add, palette) {
+                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
+                        tabs.add(tab); activeId = tab.id; showMenu = false
+                    } }
+                    item { MenuItem("标签页总览（${tabs.size}）", Icons.Default.Layers, palette) { showMenu = false; showTabs = true } }
+                    item { MenuItem("书签", Icons.Default.Star, palette) { showMenu = false; showBookmarks = true } }
+                    item { MenuItem("历史记录", Icons.Default.Search, palette) { showMenu = false; showHistory = true } }
+                    item { MenuItem("页内查找", Icons.Default.Search, palette) { showMenu = false; showFind = true } }
+                    item { MenuItem("浏览器标识 (UA)", Icons.Default.Layers, palette) { showMenu = false; showUa = true } }
+                    item { MenuItem("此站自定义 JS", Icons.Default.Add, palette) {
+                        showMenu = false
+                        val host = SiteScriptStore.hostOf(webView.url ?: "")
+                        siteScriptText = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
+                        showSiteScript = true
+                    } }
+                    item { MenuItem(if (readerMode) "退出阅读模式" else "阅读模式", Icons.Default.Search, palette) {
+                        showMenu = false
+                        readerMode = !readerMode
+                        webView.evaluateJavascript(WebScripts.readerMode, null)
+                    } }
+                    item { MenuItem("兼容渲染（治黑屏）", Icons.Default.Layers, palette) {
+                        showMenu = false
+                        val host = SiteScriptStore.hostOf(webView.url ?: urlInput)
+                        if (host.isBlank()) {
+                            android.widget.Toast.makeText(ctx, "当前没有可设置的站点", android.widget.Toast.LENGTH_SHORT).show()
                         } else {
-                            activeId = tabs.first().id
+                            val on = RenderCompatStore.toggle(ctx, host)
+                            rebuildTick += 1
+                            android.widget.Toast.makeText(ctx, if (on) "已对本站开启兼容渲染" else "已关闭本站兼容渲染", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    } }
+                    item { MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) } }
+                    item { MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) } }
+                    item { MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) } }
+                    item { MenuItem("数据管理", Icons.Default.Delete, palette) { showMenu = false; showDataPanel = true } }
+                    item { HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f)) }
+                    item {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Delete, null, tint = palette.onSurfaceDim, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("网页广告拦截", color = palette.onSurface)
+                                Text("已拦 ${adBlockedCount} 条 · 关闭后完全放行", color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Switch(
+                                checked = adBlockOn,
+                                onCheckedChange = {
+                                    adBlockOn = it
+                                    com.downloadsource.storage.AdBlockStore.setEnabled(ctx, it)
+                                    if (!it) com.downloadsource.storage.AdBlockStore.resetCount(ctx)
+                                    adBlockedCount = com.downloadsource.storage.AdBlockStore.blockedCount(ctx)
+                                    android.widget.Toast.makeText(ctx, if (it) "广告拦截已开启" else "广告拦截已关闭，广告将正常显示", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            )
                         }
                     }
-                }
-            }
-        }
-    }
-
-    if (showTabs) {
-        Dialog(onDismissRequest = { showTabs = false }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
-            Column(
-                Modifier.fillMaxSize().background(palette.background.first())
-                    .padding(horizontal = 14.dp).padding(top = 44.dp, bottom = 14.dp)
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("标签页总览", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = palette.onSurface)
-                        Text("${tabs.size} 个标签页 · 长按卡片可操作", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
-                    }
-                    TextButton(onClick = {
-                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
-                        tabs.add(tab); activeId = tab.id; showTabs = false
-                    }) { Text("新建") }
-                    TextButton(onClick = { showTabs = false }) { Text("完成") }
-                }
-                Spacer(Modifier.height(10.dp))
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    gridItems(tabs, key = { it.id }) { tab ->
-                        val active = tab.id == activeId
-                        Column(
-                            Modifier.fillMaxWidth().height(150.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(if (active) palette.primary.first().copy(alpha = 0.14f) else palette.surface)
-                                .border(
-                                    width = if (active) 2.dp else 1.dp,
-                                    color = if (active) palette.primary.first() else palette.onSurface.copy(alpha = 0.08f),
-                                    shape = RoundedCornerShape(16.dp)
-                                )
-                                .combinedClickable(
-                                    onClick = { switchTo(tab); showTabs = false },
-                                    onLongClick = { tabMenuId = tab.id }
-                                )
-                                .padding(10.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    if (active) "当前" else "${tabs.indexOf(tab) + 1}",
-                                    color = if (active) palette.primary.first() else palette.onSurfaceDim,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Icon(
-                                    Icons.Default.Close, "关闭标签页", tint = palette.onSurfaceDim,
-                                    modifier = Modifier.size(16.dp).clickable {
-                                        runCatching { com.downloadsource.storage.TabThumbStore.clear(ctx, tab.id) }
-                                        tabs.remove(tab)
-                                        if (tabs.isEmpty()) {
-                                            val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
-                                            tabs.add(fresh); activeId = fresh.id
-                                        } else if (tab.id == activeId) {
-                                            activeId = tabs.first().id
-                                        }
-                                    }
-                                )
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            val thumb = remember(tab.id) { com.downloadsource.storage.TabThumbStore.get(ctx, tab.id) }
-                            if (thumb != null) {
-                                val bmp = remember(tab.id) {
-                                    runCatching { android.graphics.BitmapFactory.decodeFile(thumb.absolutePath) }.getOrNull()
-                                }
-                                if (bmp != null) {
-                                    Image(
-                                        bitmap = bmp.asImageBitmap(), contentDescription = tab.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxWidth().height(50.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                }
-                            }
-                            Text(
-                                tab.title.ifBlank { "新标签页" },
-                                color = palette.onSurface, fontWeight = FontWeight.SemiBold,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                SiteScriptStore.hostOf(tab.url).ifBlank { tab.url },
-                                color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis
-                            )
+                    item { HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f)) }
+                    item {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("拦截跳转百度", color = palette.onSurface, modifier = Modifier.weight(1f))
+                            Switch(checked = blockBaidu, onCheckedChange = { blockBaidu = it; BrowserPrefs.setBlockBaidu(ctx, it) })
                         }
                     }
                     item {
-                        Column(
-                            Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(16.dp))
-                                .background(palette.surface.copy(alpha = 0.6f))
-                                .clickable {
-                                    val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
-                                    tabs.add(tab); activeId = tab.id; showTabs = false
-                                },
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Default.Add, "新建标签页", tint = palette.onSurfaceDim)
-                            Spacer(Modifier.height(6.dp))
-                            Text("新建标签页", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("桌面版网站", color = palette.onSurface, modifier = Modifier.weight(1f))
+                            Switch(checked = desktopMode, onCheckedChange = {
+                                desktopMode = it
+                                BrowserPrefs.setDesktop(ctx, it)
+                                webView.settings.userAgentString = if (it) DESKTOP_UA else MOBILE_UA
+                                webView.reload()
+                            })
                         }
                     }
+                    item {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("文字缩放", color = palette.onSurface, modifier = Modifier.weight(1f))
+                            listOf(90, 100, 125, 150).forEach { z ->
+                                Text(
+                                    "$z%",
+                                    color = if (zoom == z) palette.primary.first() else palette.onSurfaceDim,
+                                    fontWeight = if (zoom == z) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier.clickable {
+                                        zoom = z; BrowserPrefs.setZoom(ctx, z); webView.settings.textZoom = z
+                                    }.padding(horizontal = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                    item { HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f)) }
+                    item { MenuItem(if (fullscreen) "退出全屏" else "全屏浏览", Icons.Default.Layers, palette) { showMenu = false; fullscreen = !fullscreen } }
+                    item { MenuItem("复制当前网址", Icons.Default.Add, palette) {
+                        showMenu = false
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("url", webView.url ?: ""))
+                        android.widget.Toast.makeText(ctx, "网址已复制", android.widget.Toast.LENGTH_SHORT).show()
+                    } }
+                    item { MenuItem("关闭全部标签", Icons.Default.Delete, palette) {
+                        showMenu = false
+                        tabs.clear()
+                        val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                        tabs.add(fresh)
+                        activeId = fresh.id
+                    } }
+                    item { MenuItem("分享当前页", Icons.Default.Search, palette) { showMenu = false; sharePage(ctx, webView.url ?: "") } }
+                    item { MenuItem("用系统浏览器打开", Icons.Default.Refresh, palette) { showMenu = false; openExternal(ctx, webView.url ?: "") } }
+                    item { MenuItem("清除缓存与 Cookie", Icons.Default.Delete, palette) { showMenu = false; clearBrowserData(ctx, webView) } }
+                    item { MenuItem("关闭当前标签", Icons.Default.Close, palette) {
+                        showMenu = false
+                        val tab = currentTab()
+                        if (tab != null) {
+                            tabs.remove(tab)
+                            if (tabs.isEmpty()) {
+                                val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                                tabs.add(fresh); activeId = fresh.id
+                            } else {
+                                activeId = tabs.first().id
+                            }
+                        }
+                    } }
+                    item { Spacer(Modifier.height(24.dp)) }
                 }
             }
         }
