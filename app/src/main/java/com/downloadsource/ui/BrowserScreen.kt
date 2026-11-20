@@ -18,6 +18,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -693,7 +695,11 @@ fun BrowserScreen(
 
     if (showMenu) {
         Dialog(onDismissRequest = { showMenu = false }) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(palette.surface).padding(vertical = 8.dp)) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 560.dp)
+                    .clip(RoundedCornerShape(20.dp)).background(palette.surface)
+                    .verticalScroll(rememberScrollState()).padding(vertical = 8.dp)
+            ) {
                 MenuItem("新标签页", Icons.Default.Add, palette) {
                     val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
                     tabs.add(tab); activeId = tab.id; showMenu = false

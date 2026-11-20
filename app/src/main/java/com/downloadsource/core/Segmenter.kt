@@ -18,7 +18,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-data class TsSegment(val url: String, val key: ByteArray?, val iv: ByteArray?, val range: String? = null, val init: ByteArray? = null)
+data class TsSegment(val url: String, val key: ByteArray?, val iv: ByteArray?, val range: String? = null, val init: ByteArray? = null, val durSec: Double = 0.0)
 
 class GlobalRateLimiter(private val permitsPerSecond: Long) {
     private var nextFreeTicketMicros = 0L
@@ -397,31 +397,40 @@ class Segmenter(private val client: OkHttpClient) {
         ticker.cancel()
 
         val partFiles = segments.indices.map { File(tmpDir, "$it.ts") }
-        // 修复「大小一样只有片头」：整段拼接后交 MediaExtractor 会在时间戳断点处提前收尾，
-        // 改成逐个分片独立抽取、时间轴顺延后写入同一个 MP4，片头/片中/片尾全都在
+        val expectedSec = segments.sumOf { it.durSec }
         val mergedTs = File(outFile.parentFile, "${outFile.name}.tmp_merged.ts")
-        val mp4Ok = withContext(Dispatchers.IO) {
-            runCatching { remuxSegmentsToMp4(partFiles, outFile) }.getOrDefault(false)
-        }
-        // 兜底：MP4 明显偏短（<拼合体积 30%）就退回完整 TS，绝不给用户半截文件
-        var success = mp4Ok
-        if (mp4Ok) {
-            // 体积明显少于分片总和的 60% → 判定封装不完整，退回完整 TS
-            val partsSize = partFiles.sumOf { if (it.exists()) it.length() else 0L }
-            if (partsSize > 0 && outFile.length() < partsSize * 6 / 10) success = false
+        var success = withContext(Dispatchers.IO) {
+            runCatching { remuxSegmentsToMp4(partFiles, outFile) }.getOrDefault(false) && mp4CoverageOk(outFile, expectedSec)
         }
         if (!success) {
-            if (!ZeroCore.mergeFiles(partFiles.map { it.absolutePath }.toTypedArray(), mergedTs.absolutePath)) error("TS 合成失败")
+            // 第二方案：先拼完整 TS，再整体重封装为 MP4（避免逐段封装丢音画）
+            runCatching { mergedTs.delete() }
+            val merged = runCatching {
+                ZeroCore.mergeFiles(partFiles.map { it.absolutePath }.toTypedArray(), mergedTs.absolutePath)
+            }.getOrDefault(false)
+            if (merged) {
+                success = withContext(Dispatchers.IO) {
+                    runCatching { remuxTsToMp4(mergedTs, outFile) }.getOrDefault(false) && mp4CoverageOk(outFile, expectedSec)
+                }
+            }
         }
-        tmpDir.deleteRecursively()
         onTick(total, total, 0, emptyList())
         if (!success) {
+            // 最后兜底：交付完整 TS（内容完整，只是封装不是 MP4），绝不给半截文件
+            if (!mergedTs.exists() || mergedTs.length() == 0L) {
+                runCatching { ZeroCore.mergeFiles(partFiles.map { it.absolutePath }.toTypedArray(), mergedTs.absolutePath) }
+            }
             val fallbackTs = File(outFile.parentFile, outFile.name.substringBeforeLast('.') + ".ts")
-            if (mergedTs.exists()) mergedTs.renameTo(fallbackTs)
-            if (fallbackTs.exists()) return@coroutineScope fallbackTs
+            runCatching { outFile.delete() }
+            if (mergedTs.exists() && mergedTs.length() > 0L) {
+                runCatching { mergedTs.renameTo(fallbackTs); fallbackTs.copyTo(File(outFile.parentFile, outFile.name), true); fallbackTs.delete() }
+            }
+            if (fallbackTs.exists() && fallbackTs.length() > 0L) return@coroutineScope fallbackTs
+            if (outFile.exists() && outFile.length() > 0L) return@coroutineScope outFile
             throw Exception("TS 合并失败 (´･_･`)")
         }
         mergedTs.delete()
+        runCatching { tmpDir.deleteRecursively() }
         outFile
     }
 
@@ -530,6 +539,7 @@ class Segmenter(private val client: OkHttpClient) {
         var mediaSequence = 0L; var segmentIndex = 0L
         var mapUri: String? = null
         var pendingRange: String? = null
+        var pendingDur = 0.0
         val keyCache = HashMap<String, ByteArray>()
         val result = mutableListOf<TsSegment>()
 
@@ -556,6 +566,8 @@ class Segmenter(private val client: OkHttpClient) {
                     mediaSequence = trimmed.substringAfter(":").trim().toLongOrNull() ?: 0L
                 trimmed.startsWith("#EXT-X-MAP:") ->
                     Regex("URI=\"(.*?)\"") .find(trimmed)?.groupValues?.get(1)?.let { mapUri = resolveUrl(url, it) }
+                trimmed.startsWith("#EXTINF:") ->
+                    pendingDur = trimmed.substringAfter(":").substringBefore(",").trim().toDoubleOrNull() ?: 0.0
                 trimmed.startsWith("#EXT-X-BYTERANGE:") ->
                     pendingRange = trimmed.substringAfter(":").trim()
                 trimmed.isNotBlank() && !trimmed.startsWith("#") -> {
@@ -570,8 +582,8 @@ class Segmenter(private val client: OkHttpClient) {
                                 this[13] = (seq shr 16).toByte(); this[14] = (seq shr 8).toByte(); this[15] = seq.toByte()
                             }
                         } else null
-                        result.add(TsSegment(absUrl, currentKey, ivToUse, pendingRange, null))
-                        pendingRange = null
+                        result.add(TsSegment(absUrl, currentKey, ivToUse, pendingRange, null, pendingDur))
+                        pendingRange = null; pendingDur = 0.0
                     }
                     segmentIndex++
                 }
@@ -804,7 +816,7 @@ class Segmenter(private val client: OkHttpClient) {
                 }
             }
             muxer.start()
-            val buffer = ByteBuffer.allocate(2 * 1024 * 1024)
+            val buffer = ByteBuffer.allocate(8 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
             // 简单按时间戳合并：反复挑当前时间戳最小的轨道
             while (true) {
@@ -834,6 +846,20 @@ class Segmenter(private val client: OkHttpClient) {
      * 逐分片重封装：每个 TS 分片独立用 MediaExtractor 读取，时间戳顺延后写入同一个 MP4。
      * 分片之间时间戳从 0 重新开始也不会丢内容，这是整段拼接方案「只有片头」的根因修复。
      */
+    /** MP4 时长覆盖校验：明显短于清单总时长就判定封装不完整 */
+    private fun mp4CoverageOk(mp4: File, expectedSec: Double): Boolean {
+        if (!mp4.exists() || mp4.length() < 1024) return false
+        if (expectedSec < 8.0) return true
+        return runCatching {
+            val r = android.media.MediaMetadataRetriever()
+            try {
+                r.setDataSource(mp4.absolutePath)
+                val ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                ms >= (expectedSec * 0.75 * 1000).toLong()
+            } finally { runCatching { r.release() } }
+        }.getOrDefault(true)
+    }
+
     private fun remuxSegmentsToMp4(files: List<File>, output: File): Boolean {
         if (output.exists()) output.delete()
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -876,7 +902,7 @@ class Segmenter(private val client: OkHttpClient) {
                         }
                         if (trackMap.isEmpty()) continue
                     }
-                    val buf = ByteBuffer.allocate(2 * 1024 * 1024)
+                    val buf = ByteBuffer.allocate(8 * 1024 * 1024)
                     val info = MediaCodec.BufferInfo()
                     var lastTs = 0L
                     while (true) {
@@ -886,7 +912,8 @@ class Segmenter(private val client: OkHttpClient) {
                         val ts = ex.sampleTime
                         if (ts > lastTs) lastTs = ts
                         val track = ex.sampleTrackIndex
-                        val outTrack = trackMap[track] ?: run { ex.advance(); continue }
+                        val outTrack = trackMap[track]
+                        if (outTrack == null) { ex.advance(); continue }
                         info.offset = 0
                         info.size = size
                         info.presentationTimeUs = timeOffsetUs + ts
@@ -907,13 +934,13 @@ class Segmenter(private val client: OkHttpClient) {
         }
     }
 
-    private fun remuxTsToMp4(input: File, output: File) {
+    private fun remuxTsToMp4(input: File, output: File): Boolean {
         val extractor = MediaExtractor()
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         try {
             extractor.setDataSource(input.absolutePath)
             val trackMap = HashMap<Int, Int>()
-            val buffer = ByteBuffer.allocate(2 * 1024 * 1024)
+            val buffer = ByteBuffer.allocate(8 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
             for (i in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(i)
@@ -931,6 +958,7 @@ class Segmenter(private val client: OkHttpClient) {
                 if (trackMap.containsKey(trackIdx)) muxer.writeSampleData(trackMap[trackIdx]!!, buffer, info)
                 extractor.advance()
             }
+            return true
         } finally { 
             runCatching { muxer.stop() }; runCatching { muxer.release() }; runCatching { extractor.release() } 
         }
