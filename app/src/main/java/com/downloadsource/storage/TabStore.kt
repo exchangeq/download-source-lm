@@ -10,7 +10,7 @@ object TabStore {
     private const val KEY_TABS = "tabs_json"
     private const val KEY_ACTIVE = "active_id"
 
-    data class SavedTab(val id: Int, val title: String, val url: String)
+    data class SavedTab(val id: Int, val title: String, val url: String, val scrollY: Int = 0)
 
     private val gson = Gson()
 

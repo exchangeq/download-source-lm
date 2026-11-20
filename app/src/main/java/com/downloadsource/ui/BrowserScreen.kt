@@ -17,6 +17,7 @@ import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -85,11 +86,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -112,7 +115,8 @@ import com.downloadsource.web.WebScripts
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
-private data class BrowserTab(val id: Int, var title: String, var url: String)
+private data class BrowserTab(val id: Int, var title: String, var url: String, var scrollY: Int = 0)
+private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 private const val MOBILE_UA =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
@@ -135,7 +139,7 @@ fun BrowserScreen(
     val restored = remember { com.downloadsource.storage.TabStore.load(ctx) }
     val tabs = remember {
         val list = if (restored.isNotEmpty()) {
-            restored.map { BrowserTab(it.id, it.title, it.url.ifBlank { "about:blank" }) }
+            restored.map { BrowserTab(it.id, it.title, it.url.ifBlank { "about:blank" }, it.scrollY) }
         } else {
             listOf(BrowserTab(1, "新标签页", sessionUrl))
         }
@@ -296,6 +300,10 @@ fun BrowserScreen(
                     BrowserHistoryStore.addHistory(ctx, url)
                 }
                 view?.evaluateJavascript(webInterceptor.injectionScript, null)
+                val sy = currentTab()?.scrollY ?: 0
+                if (sy > 0) {
+                    view?.evaluateJavascript("setTimeout(function(){window.scrollTo(0,$sy);},350)", null)
+                }
                 // 站点自定义 JS + 阅读模式
                 val host = SiteScriptStore.hostOf(url ?: "")
                 val siteJs = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
@@ -481,15 +489,14 @@ fun BrowserScreen(
     }
 
     LaunchedEffect(Unit) {
-        snapshotFlow {
-            Triple(tabs.map { Triple(it.id, it.title, it.url) }, activeId, pageTitle)
-        }.collect { (list, act, _) ->
-            com.downloadsource.storage.TabStore.save(
-                ctx,
-                list.map { (id, t, u) -> com.downloadsource.storage.TabStore.SavedTab(id, t, u) },
-                act
-            )
-        }
+        snapshotFlow { tabs.map { Quad(it.id, it.title, it.url, it.scrollY) } to activeId }
+            .collect { (list, act) ->
+                com.downloadsource.storage.TabStore.save(
+                    ctx,
+                    list.map { com.downloadsource.storage.TabStore.SavedTab(it.a, it.b, it.c, it.d) },
+                    act
+                )
+            }
     }
 
     LaunchedEffect(Unit) {
@@ -504,6 +511,28 @@ fun BrowserScreen(
             webView.loadUrl(externalUrlToLoad)
             onUrlLoaded()
         }
+    }
+
+    /** 切走前存快照：滚动位置 + 当前画面缩略图 */
+    fun snapshotCurrent() {
+        val tab = currentTab() ?: return
+        runCatching {
+            webView.evaluateJavascript("window.scrollY") { v ->
+                tab.scrollY = v?.trim('"')?.toFloatOrNull()?.toInt() ?: 0
+            }
+        }
+        runCatching {
+            val w = webView.width.coerceAtLeast(1); val h = webView.height.coerceAtLeast(1)
+            val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.RGB_565)
+            webView.draw(android.graphics.Canvas(bmp))
+            com.downloadsource.storage.TabThumbStore.save(ctx, tab.id, bmp)
+        }
+    }
+
+    fun switchTo(tab: BrowserTab) {
+        if (tab.id == activeId) return
+        snapshotCurrent()
+        activeId = tab.id
     }
 
     LaunchedEffect(activeId) {
@@ -857,7 +886,7 @@ fun BrowserScreen(
                                     shape = RoundedCornerShape(16.dp)
                                 )
                                 .combinedClickable(
-                                    onClick = { activeId = tab.id; showTabs = false },
+                                    onClick = { switchTo(tab); showTabs = false },
                                     onLongClick = { tabMenuId = tab.id }
                                 )
                                 .padding(10.dp)
@@ -873,6 +902,7 @@ fun BrowserScreen(
                                 Icon(
                                     Icons.Default.Close, "关闭标签页", tint = palette.onSurfaceDim,
                                     modifier = Modifier.size(16.dp).clickable {
+                                        runCatching { com.downloadsource.storage.TabThumbStore.clear(ctx, tab.id) }
                                         tabs.remove(tab)
                                         if (tabs.isEmpty()) {
                                             val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
@@ -884,6 +914,21 @@ fun BrowserScreen(
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
+                            val thumb = remember(tab.id) { com.downloadsource.storage.TabThumbStore.get(ctx, tab.id) }
+                            if (thumb != null) {
+                                val bmp = remember(tab.id) {
+                                    runCatching { android.graphics.BitmapFactory.decodeFile(thumb.absolutePath) }.getOrNull()
+                                }
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(), contentDescription = tab.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxWidth().height(50.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                            }
                             Text(
                                 tab.title.ifBlank { "新标签页" },
                                 color = palette.onSurface, fontWeight = FontWeight.SemiBold,
