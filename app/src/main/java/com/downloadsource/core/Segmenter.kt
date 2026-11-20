@@ -396,11 +396,22 @@ class Segmenter(private val client: OkHttpClient) {
         }.awaitAll()
         ticker.cancel()
 
+        val partFiles = segments.indices.map { File(tmpDir, "$it.ts") }
+        // 修复「大小一样只有片头」：整段拼接后交 MediaExtractor 会在时间戳断点处提前收尾，
+        // 改成逐个分片独立抽取、时间轴顺延后写入同一个 MP4，片头/片中/片尾全都在
         val mergedTs = File(outFile.parentFile, "${outFile.name}.tmp_merged.ts")
-        if (!ZeroCore.mergeFiles(segments.indices.map { File(tmpDir, "$it.ts").absolutePath }.toTypedArray(), mergedTs.absolutePath)) error("TS 合成失败")
-
-        val success = withContext(Dispatchers.IO) { 
-            try { remuxTsToMp4(mergedTs, outFile); true } catch (e: Exception) { false } 
+        val mp4Ok = withContext(Dispatchers.IO) {
+            runCatching { remuxSegmentsToMp4(partFiles, outFile) }.getOrDefault(false)
+        }
+        // 兜底：MP4 明显偏短（<拼合体积 30%）就退回完整 TS，绝不给用户半截文件
+        var success = mp4Ok
+        if (mp4Ok) {
+            // 体积明显少于分片总和的 60% → 判定封装不完整，退回完整 TS
+            val partsSize = partFiles.sumOf { if (it.exists()) it.length() else 0L }
+            if (partsSize > 0 && outFile.length() < partsSize * 6 / 10) success = false
+        }
+        if (!success) {
+            if (!ZeroCore.mergeFiles(partFiles.map { it.absolutePath }.toTypedArray(), mergedTs.absolutePath)) error("TS 合成失败")
         }
         tmpDir.deleteRecursively()
         onTick(total, total, 0, emptyList())
@@ -816,6 +827,83 @@ class Segmenter(private val client: OkHttpClient) {
         } finally {
             runCatching { muxer.stop() }; runCatching { muxer.release() }
             extractors.forEach { runCatching { it.release() } }
+        }
+    }
+
+    /**
+     * 逐分片重封装：每个 TS 分片独立用 MediaExtractor 读取，时间戳顺延后写入同一个 MP4。
+     * 分片之间时间戳从 0 重新开始也不会丢内容，这是整段拼接方案「只有片头」的根因修复。
+     */
+    private fun remuxSegmentsToMp4(files: List<File>, output: File): Boolean {
+        if (output.exists()) output.delete()
+        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var started = false
+        var timeOffsetUs = 0L
+        var written = 0L
+        var mimeToMuxer: Map<String, MutableList<Int>> = emptyMap()
+        try {
+            for (file in files) {
+                if (!file.exists() || file.length() == 0L) continue
+                val ex = MediaExtractor()
+                try {
+                    ex.setDataSource(file.absolutePath)
+                    val trackMap = HashMap<Int, Int>()
+                    if (!started) {
+                        val m = LinkedHashMap<String, MutableList<Int>>()
+                        for (i in 0 until ex.trackCount) {
+                            val fmt = ex.getTrackFormat(i)
+                            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+                            if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue
+                            val out = muxer.addTrack(fmt)
+                            m.getOrPut(mime) { mutableListOf() }.add(out)
+                            ex.selectTrack(i)
+                            trackMap[i] = out
+                        }
+                        if (trackMap.isEmpty()) return false
+                        mimeToMuxer = m
+                        muxer.start(); started = true
+                    } else {
+                        // 后续分片：按 mime 顺序对齐到已创建的轨道
+                        val used = HashMap<String, Int>()
+                        for (i in 0 until ex.trackCount) {
+                            val mime = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: continue
+                            val list = mimeToMuxer[mime] ?: continue
+                            val k = used.getOrDefault(mime, 0)
+                            if (k >= list.size) continue
+                            ex.selectTrack(i)
+                            trackMap[i] = list[k]
+                            used[mime] = k + 1
+                        }
+                        if (trackMap.isEmpty()) continue
+                    }
+                    val buf = ByteBuffer.allocate(2 * 1024 * 1024)
+                    val info = MediaCodec.BufferInfo()
+                    var lastTs = 0L
+                    while (true) {
+                        buf.clear()
+                        val size = ex.readSampleData(buf, 0)
+                        if (size < 0) break
+                        val ts = ex.sampleTime
+                        if (ts > lastTs) lastTs = ts
+                        val track = ex.sampleTrackIndex
+                        val outTrack = trackMap[track] ?: run { ex.advance(); continue }
+                        info.offset = 0
+                        info.size = size
+                        info.presentationTimeUs = timeOffsetUs + ts
+                        info.flags = ex.sampleFlags
+                        runCatching { muxer.writeSampleData(outTrack, buf, info) }
+                        written++
+                        ex.advance()
+                    }
+                    timeOffsetUs += lastTs + 20_000L
+                } finally {
+                    runCatching { ex.release() }
+                }
+            }
+            return written > 0
+        } finally {
+            runCatching { if (started) muxer.stop() }
+            runCatching { muxer.release() }
         }
     }
 
