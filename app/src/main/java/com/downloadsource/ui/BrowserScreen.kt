@@ -81,6 +81,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -131,11 +132,20 @@ fun BrowserScreen(
     val palette = LocalPalette.current
 
     val sessionUrl = remember { BrowserHistoryStore.getSession(ctx) }
-    val tabs = remember { mutableListOf(BrowserTab(1, "新标签页", sessionUrl)).toMutableStateList() }
+    val restored = remember { com.downloadsource.storage.TabStore.load(ctx) }
+    val tabs = remember {
+        val list = if (restored.isNotEmpty()) {
+            restored.map { BrowserTab(it.id, it.title, it.url.ifBlank { "about:blank" }) }
+        } else {
+            listOf(BrowserTab(1, "新标签页", sessionUrl))
+        }
+        mutableListOf<BrowserTab>().apply { addAll(list) }.toMutableStateList()
+    }
+    val restoredActive = remember { com.downloadsource.storage.TabStore.activeId(ctx) }
+    var activeId by remember { mutableStateOf(tabs.firstOrNull { it.id == restoredActive }?.id ?: tabs.first().id) }
+    val idGen = remember { AtomicInteger((tabs.maxOfOrNull { it.id } ?: 1) + 1) }
     var linkMenuUrl by remember { mutableStateOf<String?>(null) }
     var tabMenuId by remember { mutableStateOf(-1) }
-    var activeId by remember { mutableStateOf(1) }
-    val idGen = remember { AtomicInteger(2) }
 
     var urlInput by remember { mutableStateOf(sessionUrl) }
     var pageTitle by remember { mutableStateOf("") }
@@ -467,6 +477,18 @@ fun BrowserScreen(
     DisposableEffect(rebuildTick) {
         onDispose {
             runCatching { webView.destroy() }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            Triple(tabs.map { Triple(it.id, it.title, it.url) }, activeId, pageTitle)
+        }.collect { (list, act, _) ->
+            com.downloadsource.storage.TabStore.save(
+                ctx,
+                list.map { (id, t, u) -> com.downloadsource.storage.TabStore.SavedTab(id, t, u) },
+                act
+            )
         }
     }
 

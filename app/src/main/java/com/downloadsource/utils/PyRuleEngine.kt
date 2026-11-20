@@ -16,13 +16,24 @@ object PyRuleEngine {
                 else if (l.startsWith("]")) mode = 0
                 else if (l.startsWith("r\"")) {
                     val regex = l.substringAfter("r\"").substringBefore("\"")
-                    if (mode == 1) mediaPatterns.add(Pattern.compile(regex))
-                    if (mode == 2) adPatterns.add(Pattern.compile(regex))
+                    if (mode == 1) mediaPatterns.add(Pattern.compile(regex, Pattern.CASE_INSENSITIVE))
+                    if (mode == 2) adPatterns.add(Pattern.compile(regex, Pattern.CASE_INSENSITIVE))
                 }
             }
             reader.close()
         } catch (e: Exception) { }
     }
-    fun shouldBlock(url: String): Boolean = adPatterns.any { it.matcher(url).matches() }
-    fun shouldSniff(url: String): Boolean = mediaPatterns.any { it.matcher(url).matches() }
+    fun shouldBlock(url: String): Boolean =
+        adPatterns.any { runCatching { it.matcher(url).matches() }.getOrDefault(false) }
+
+    fun shouldSniff(url: String): Boolean =
+        mediaPatterns.any { runCatching { it.matcher(url).matches() }.getOrDefault(false) }
+
+    /** 引擎自检：返回 (媒体规则数, 广告规则数)，设置页可展示 */
+    fun stats(): Pair<Int, Int> = mediaPatterns.size to adPatterns.size
+
+    /** 热更新规则：把 assets 里的规则重新加载一次 */
+    fun reload(context: Context) {
+        mediaPatterns.clear(); adPatterns.clear(); init(context)
+    }
 }
