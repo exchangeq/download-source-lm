@@ -127,6 +127,8 @@ fun BrowserScreen(
 
     val sessionUrl = remember { BrowserHistoryStore.getSession(ctx) }
     val tabs = remember { mutableListOf(BrowserTab(1, "新标签页", sessionUrl)).toMutableStateList() }
+    var linkMenuUrl by remember { mutableStateOf<String?>(null) }
+    var tabMenuId by remember { mutableStateOf(-1) }
     var activeId by remember { mutableStateOf(1) }
     val idGen = remember { AtomicInteger(2) }
 
@@ -447,9 +449,10 @@ fun BrowserScreen(
         webView.setOnLongClickListener {
             val hit = webView.hitTestResult
             val extra = hit.extra
-            if ((hit.type == WebView.HitTestResult.IMAGE_TYPE || hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE) && !extra.isNullOrBlank()) {
-                pendingDownloadUrl = extra
-                showDownloadDialog = true
+            if ((hit.type == WebView.HitTestResult.IMAGE_TYPE ||
+                        hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+                        hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) && !extra.isNullOrBlank()) {
+                linkMenuUrl = extra
                 true
             } else false
         }
@@ -799,7 +802,10 @@ fun BrowserScreen(
                 }
                 LazyColumn {
                     items(tabs) { tab ->
-                        Row(Modifier.fillMaxWidth().clickable { activeId = tab.id; showTabs = false }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().combinedClickable(
+                            onClick = { activeId = tab.id; showTabs = false },
+                            onLongClick = { tabMenuId = tab.id }
+                        ).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(tab.title.ifBlank { tab.url }, color = if (tab.id == activeId) palette.primary.first() else palette.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                             IconButton(onClick = {
                                 tabs.remove(tab)
@@ -813,6 +819,79 @@ fun BrowserScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    linkMenuUrl?.let { link ->
+        Dialog(onDismissRequest = { linkMenuUrl = null }) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(palette.surface)) {
+                Text(
+                    SiteScriptStore.hostOf(link).ifBlank { link },
+                    color = palette.onSurface, fontWeight = FontWeight.Bold, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(16.dp, 14.dp, 16.dp, 4.dp)
+                )
+                Text(
+                    link, color = palette.onSurfaceDim, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 10.dp)
+                )
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.08f))
+                listOf(
+                    "在新标签页打开" to {
+                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", link)
+                        tabs.add(tab); activeId = tab.id
+                        webView.loadUrl(link)
+                        linkMenuUrl = null
+                    },
+                    "后台打开（不切换）" to {
+                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", link)
+                        tabs.add(tab)
+                        android.widget.Toast.makeText(ctx, "已在后台打开，长按悬浮球查看", android.widget.Toast.LENGTH_SHORT).show()
+                        linkMenuUrl = null
+                    },
+                    "复制链接" to {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("url", link))
+                        android.widget.Toast.makeText(ctx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                        linkMenuUrl = null
+                    },
+                    "下载这个文件" to {
+                        pendingDownloadUrl = link; showDownloadDialog = true; linkMenuUrl = null
+                    }
+                ).forEach { (label, action) ->
+                    Text(
+                        label, color = palette.onSurface, modifier = Modifier.fillMaxWidth()
+                            .clickable { action() }.padding(horizontal = 18.dp, vertical = 13.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    if (tabMenuId >= 0) {
+        val tab = tabs.firstOrNull { it.id == tabMenuId }
+        Dialog(onDismissRequest = { tabMenuId = -1 }) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(palette.surface).padding(vertical = 8.dp)) {
+                Text("标签页操作", fontWeight = FontWeight.Bold, color = palette.onSurface, modifier = Modifier.padding(16.dp, 12.dp))
+                Text("复制网址", color = palette.onSurface, modifier = Modifier.fillMaxWidth().clickable {
+                    tab?.let {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("url", it.url))
+                        android.widget.Toast.makeText(ctx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    tabMenuId = -1
+                }.padding(16.dp, 12.dp))
+                Text("关闭此标签页", color = Color(0xFFFF5A5A), modifier = Modifier.fillMaxWidth().clickable {
+                    tab?.let { t ->
+                        tabs.remove(t)
+                        if (tabs.isEmpty()) {
+                            val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                            tabs.add(fresh); activeId = fresh.id
+                        } else if (t.id == activeId) activeId = tabs.first().id
+                    }
+                    tabMenuId = -1
+                }.padding(16.dp, 12.dp))
             }
         }
     }

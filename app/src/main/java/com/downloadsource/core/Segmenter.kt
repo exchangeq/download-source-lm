@@ -78,6 +78,10 @@ class Segmenter(private val client: OkHttpClient) {
         if (supportsRange && total > 8L shl 20 && speedLimitKb <= 0) {
             n = calibrateParts(url, headers, total, n).coerceIn(1, 64).coerceAtMost(maxBySize)
         }
+        // 独家：连接预热——并发建连，把 TCP/TLS 握手开销挪到下载开始前，首字节更快、抖动更小
+        if (n > 1 && supportsRange) {
+            withTimeoutOrNull(2000) { runCatching { prewarm(url, headers, n) } }
+        }
         val downloaded = AtomicLong(0)
         val rateLimiter = GlobalRateLimiter(if (speedLimitKb > 0) speedLimitKb * 1024 else 0)
 
@@ -260,6 +264,21 @@ class Segmenter(private val client: OkHttpClient) {
                 }
             }.getOrDefault(expect)
         }
+
+    /** 并发建连预热：最多 16 条连接，失败静默 */
+    private suspend fun prewarm(url: String, headers: okhttp3.Headers, n: Int) = coroutineScope {
+        (0 until n.coerceIn(1, 16)).map {
+            async(Dispatchers.IO) {
+                runCatching {
+                    val req = okhttp3.Request.Builder().url(url).headers(headers)
+                        .header("Range", "bytes=0-0").build()
+                    fastClient.newCall(req).execute().use { resp ->
+                        resp.body?.byteStream()?.read(ByteArray(1))
+                    }
+                }
+            }
+        }.awaitAll()
+    }
 
     private suspend fun retryDownloadRange(taskId: String, url: String, start: Long, end: Long, file: File, counter: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers, allow200: Boolean) {
         var attempt = 0
