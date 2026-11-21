@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -205,6 +206,7 @@ fun BrowserScreen(
     }
     var lastBlankWatchUrl by remember { mutableStateOf("") }
     val autoFitDone = remember { mutableSetOf<String>() }
+    var autoRetryDone by remember { mutableStateOf(setOf<String>()) }
     var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
     var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
@@ -1026,33 +1028,7 @@ fun BrowserScreen(
                     } }
                     item { MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) } }
                     item { MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) } }
-                    item { MenuItem("分享当前网页", Icons.Default.Share, palette) { showMenu = false
-                        val u = webView.url ?: urlInput
-                        if (u.isNotBlank()) {
-                            runCatching {
-                                ctx.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(android.content.Intent.EXTRA_SUBJECT, pageTitle)
-                                    putExtra(android.content.Intent.EXTRA_TEXT, (pageTitle.ifBlank { "网页" }) + "\n" + u)
-                                }, "分享到"))
-                            }
-                        }
-                    } }
                     item { MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) } }
-                    item { MenuItem("分享当前页面", Icons.AutoMirrored.Filled.Send, palette) {
-                        showMenu = false
-                        val target = webView.url ?: urlInput
-                        if (target.isNotBlank()) {
-                            runCatching {
-                                ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(android.content.Intent.EXTRA_SUBJECT, pageTitle.ifBlank { target })
-                                    putExtra(android.content.Intent.EXTRA_TEXT, pageTitle.ifBlank { "" } + "\n" + target)
-                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                })
-                            }.onFailure { android.widget.Toast.makeText(ctx, "没有可分享的应用", android.widget.Toast.LENGTH_SHORT).show() }
-                        }
-                    } }
                     item { MenuItem(if (ttsSpeaking) "停止朗读" else "朗读正文", Icons.Default.PlayArrow, palette) {
                         showMenu = false
                         if (ttsSpeaking) {

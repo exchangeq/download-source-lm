@@ -80,8 +80,7 @@ object UpdateManager {
     private fun pick(els: List<com.google.gson.JsonObject>, rawCurrentVersion: String): ReleaseInfo? {
         try {
             val currentVersion = rawCurrentVersion.trim()
-            run {
-                // 通道识别按 applicationId 判断，比看资产名字更可靠
+            // 通道识别按 applicationId 判断，比看资产名字更可靠
                 val isBeta = BuildConfig.APPLICATION_ID.endsWith(".beta") || BuildConfig.CHANNEL == "zeta"
                 var best: ReleaseInfo? = null
                 var bestVer: String? = null
@@ -111,8 +110,7 @@ object UpdateManager {
                         best = ReleaseInfo(version, apkUrl, body, isBeta)
                     }
                 }
-                return best
-            }
+            return best
         } catch (e: Exception) { null }
     }
 
