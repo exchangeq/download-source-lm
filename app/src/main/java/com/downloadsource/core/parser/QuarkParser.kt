@@ -15,7 +15,20 @@ object QuarkParser {
     private val client = OkHttpClient()
 
     suspend fun parse(ctx: Context, url: String, pwd: String?): List<DiskParser.FileInfo> = withContext(Dispatchers.IO) {
-        val cookie = CookieStore.load(ctx, "quark") ?: error("请先在浏览器登录夸克网盘")
+        // Cookie 优先用保存的；没有就从浏览器会话里现取（分享直链通常要求登录态）
+        val cookie = CookieStore.load(ctx, "quark")
+            ?: runCatching {
+                android.webkit.CookieManager.getInstance()
+                    .getCookie("https://pan.quark.cn")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.also { CookieStore.save(ctx, "quark", it) }
+            }.getOrNull()
+            ?: runCatching {
+                android.webkit.CookieManager.getInstance()
+                    .getCookie("https://drive-pc.quark.cn")
+                    ?.takeIf { it.isNotBlank() }
+            }.getOrNull()
+            ?: error("请先在浏览器里打开 pan.quark.cn 并登录（解析需要登录态 Cookie）")
         val shareId = Regex("""/s/([a-zA-Z0-9]+)""").find(url)?.groupValues?.get(1) ?: error("链接识别失败")
         // 链接里带的提取码优先
         val pass = pwd?.takeIf { it.isNotBlank() }
@@ -24,7 +37,10 @@ object QuarkParser {
 
         val tokenApi = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
         val tokenBody = """{"pwd_id":"$shareId","passcode":"$pass"}"""
-        val tokenReq = Request.Builder().url(tokenApi).post(tokenBody.toRequestBody("application/json".toMediaType())).header("Cookie", cookie).build()
+        val tokenReq = Request.Builder().url(tokenApi).post(tokenBody.toRequestBody("application/json".toMediaType()))
+            .header("Cookie", cookie).header("Referer", "https://pan.quark.cn/").header("Origin", "https://pan.quark.cn")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
+            .build()
         val tokenJson = JSONObject(client.newCall(tokenReq).execute().body?.string() ?: "")
         val stoken = tokenJson.optJSONObject("data")?.optString("stoken")?.takeIf { it.isNotBlank() }
             ?: run {
@@ -72,6 +88,7 @@ object QuarkParser {
                     var dlUrl: String? = null
                     for (api in listOf(
                         "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken",
+                        "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc",
                         "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
                     )) {
                         val dlBody = """{"fids":["$fid"],"pwd_id":"$shareId","stoken":"$stoken"}"""

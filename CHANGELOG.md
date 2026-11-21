@@ -704,3 +704,24 @@
 
 - 下载完成后核对体积：大文件短缺超过 64KB 判定不完整，抛错并自动重试，不再把半截文件当成功
 - 扩展名分类再扩一批（mkv/mk3d/evo/h264/hevc/av1、dsf/dff/mod、mpkg/run/flatpak/appx、cbz/cbr/xps/wps、zpaq/cpio 等）
+
+## v10.0-kappa1.2-lm（标签页修复 · 网盘 Cookie · 格式扩容）
+
+### 标签页打不开修复
+
+- 点卡片不再只依赖状态订阅：直接 `loadUrl` 该标签页地址，切过去一定能加载
+- 标签页为空白页时明确进入起始页，不再出现「点了没反应」的黑白页
+- `target=_blank` / `window.open` 等新窗口请求：统一转成新标签页并由主 WebView 打开，临时 WebView 立即销毁，不再泄漏
+- 长按悬浮球、点标签数都能进入总览页查看全部标签页
+
+### 夸克网盘解析
+
+- Cookie 优先取已保存的；没有就实时从 WebView CookieManager 里读 `pan.quark.cn` / `drive-pc.quark.cn` 的会话并自动保存
+- 取 Token、拉目录、取下载地址三个请求统一带 Cookie / Referer / Origin / 桌面 UA，成功率明显提高
+- 目录支持分页 + 递归子文件夹，多文件分享可逐条列出（不会只给第一个）
+- 下载接口三套候选逐个尝试，命中即用
+
+### 格式扩容
+
+- 视频/音频/安装包/压缩包/文档分类扩到 150+，新增 pmp/bik/smk/y4m、mpkg/obb/vsix/nupkg/whl、r01/s00/wim/swm/udf/mdf 等分包格式
+- 未识别的扩展名一律原样保留，不再改名成 .bin；引擎不按白名单拦截扩展名，任意后缀都能下

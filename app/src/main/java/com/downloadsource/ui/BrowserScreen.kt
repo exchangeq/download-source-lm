@@ -414,6 +414,10 @@ fun BrowserScreen(
                         val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", target)
                         tabs.add(tab)
                         activeId = tab.id
+                        urlInput = target
+                        blankPage = false
+                        webView.loadUrl(target)
+                        runCatching { tmp.stopLoading(); tmp.destroy() }
                         return true
                     }
                 }
@@ -1042,7 +1046,14 @@ fun BrowserScreen(
                                     shape = RoundedCornerShape(16.dp)
                                 )
                                 .combinedClickable(
-                                    onClick = { switchTo(tab); showTabs = false },
+                                    onClick = {
+                                        switchTo(tab)
+                                        showTabs = false
+                                        val target = tab.url.ifBlank { "about:blank" }
+                                        urlInput = target
+                                        blankPage = target.startsWith("about:")
+                                        webView.loadUrl(target)
+                                    },
                                     onLongClick = { tabMenuId = tab.id }
                                 )
                                 .padding(10.dp)

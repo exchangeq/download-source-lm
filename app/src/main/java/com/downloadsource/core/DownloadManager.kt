@@ -233,7 +233,8 @@ object DownloadManager {
     private val VIDEO_EXTS = setOf(
         "mp4", "mkv", "avi", "mov", "ts", "m2ts", "mts", "webm", "flv", "f4v", "m4v", "wmv", "ogv", "ogm",
         "rmvb", "rm", "3gp", "3g2", "vob", "asf", "m3u8", "mpd", "m4s", "divx", "xvid", "dv", "mxf", "wtv", "nut",
-        "mk3d", "evo", "h264", "h265", "hevc", "av1", "ivf", "yuv", "m1v", "m2v", "mpg", "mpeg", "dat", "vro", "ifo"
+        "mk3d", "evo", "h264", "h265", "hevc", "av1", "ivf", "yuv", "m1v", "m2v", "mpg", "mpeg", "dat", "vro", "ifo",
+        "pmp", "bik", "smk", "roq", "y4m", "drc", "amv", "csf", "mpv", "gxf", "mve", "qsv", "bink", "cine", "m3u"
     )
     private val AUDIO_EXTS = setOf(
         "mp3", "flac", "wav", "aac", "m4a", "m4b", "ogg", "opus", "wma", "ape", "aiff", "aif", "ac3", "amr",
@@ -243,7 +244,8 @@ object DownloadManager {
     private val PACKAGE_EXTS = setOf(
         "apk", "apks", "xapk", "apkm", "aab", "ipa", "exe", "msi", "msix", "dmg", "pkg", "mpkg", "deb", "rpm",
         "iso", "img", "vhd", "vhdx", "appimage", "crx", "xpi", "wgt", "jar", "sis", "sisx", "cab", "air",
-        "mpkg", "run", "flatpak", "snap", "appx", "msu", "pkg.tar.zst", "eop", "itz"
+        "mpkg", "run", "flatpak", "snap", "appx", "msu", "pkg.tar.zst", "eop", "itz",
+        "obb", "vsix", "nupkg", "whl", "egg", "gem", "car", "bundle", "apkl", "apkx", "module", "lspatch"
     )
     private val IMAGE_EXTS = setOf(
         "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "avif", "tif", "tiff", "ico", "psd",
@@ -257,7 +259,8 @@ object DownloadManager {
     )
     private val ARCHIVE_EXTS = setOf(
         "zip", "rar", "7z", "tar", "gz", "tgz", "xz", "bz2", "tbz2", "zst", "lz4", "lzma", "z", "arj", "lzh",
-        "ace", "torrent", "par2", "001", "r00", "zipx", "zpaq", "br", "cpio", "ar", "a", "lha", "pea", "zip.001"
+        "ace", "torrent", "par2", "001", "r00", "zipx", "zpaq", "br", "cpio", "ar", "a", "lha", "pea", "zip.001",
+        "r01", "r02", "s00", "s01", "7z.001", "tar.bz2", "tar.gz", "tar.xz", "tar.zst", "wim", "swm", "udf", "nrg", "mdf", "mds"
     )
 
     private fun createCategoryDir(baseDir: File, fileName: String): File {
