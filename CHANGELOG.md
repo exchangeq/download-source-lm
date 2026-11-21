@@ -636,3 +636,24 @@
 ### 省流 / 禁图
 
 - 设置里的「加载图片」开关现在真正生效：关闭后 `loadsImagesAutomatically=false` 且 `blockNetworkImage=true`，直接不拉图片流量
+
+## v10.0-kappa1.1-lm（版本比对修复 · 桌面 UA 修复）
+
+### 检查更新版本比对修复
+
+- 以前把 `10.0-kappa1.0` 截成 `10.0` 再比，永远判定「已是最新」，现在按完整版本比较
+- 新规则：数字段 → 代号（`10.0` < `10.0-kappa1.0`）→ 代号序号 → 修订号，`kappa1.0` → `kappa1.1` 能被正确识别为新版
+- 资产选择优先「LM-Ultra-Fast-Downloader-<版本>」，排除 `app-omega-release` 这类内部产物名
+- 通道判定改用 applicationId（`.beta` 后缀）而不是靠资产名猜，包名识别更稳
+
+### 桌面 UA / 切换 UA 卡顿
+
+- UA 切换统一走 `applyUserAgent()`：同时设置 `useWideViewPort`、`loadWithOverviewMode`、缩放与内置缩放控件
+- 桌面模式不再出现「页面划不动」：宽视口 + 概览缩放，页面可以正常上下拖，也能双指缩放后横向拖动
+- 换 UA 后强制回到硬件渲染层（`LAYER_TYPE_HARDWARE`），清掉站点兼容用的软件层，解决切换后异常卡顿
+- 同时重置 `isNestedScrollingEnabled` 与触摸拦截，避免手势被上层吞掉
+
+### 设置页底部
+
+- 版本信息仍只在页面最底部：版本号 + 包名 + 引擎/规则条数
+- 不加构建时间（按你的要求）

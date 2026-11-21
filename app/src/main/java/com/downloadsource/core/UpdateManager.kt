@@ -17,56 +17,79 @@ object UpdateManager {
 
     data class ReleaseInfo(val version: String, val downloadUrl: String, val changelog: String, val isZeta: Boolean)
 
+    /** 版本解析：10.0 / 10.0-kappa1.0 / 9.3.0-beta2.1 */
+    private data class Ver(val nums: List<Int>, val stage: String, val stageNo: Int, val rev: Int)
+
+    private fun parseVer(raw: String): Ver {
+        val cleaned = raw.trim().removePrefix("v").substringBefore("+")
+        val m = Regex("^(\\d+(?:\\.\\d+)*)(?:-([A-Za-z]+)(\\d*)(?:\\.(\\d+))?)?").find(cleaned)
+        val numsStr = m?.groupValues?.get(1)?.takeIf { it.isNotBlank() } ?: "0"
+        return Ver(
+            nums = numsStr.split(".").map { it.toIntOrNull() ?: 0 },
+            stage = (m?.groupValues?.get(2) ?: "").lowercase(),
+            stageNo = (m?.groupValues?.get(3) ?: "").toIntOrNull() ?: 0,
+            rev = (m?.groupValues?.get(4) ?: "").toIntOrNull() ?: 0
+        )
+    }
+
+    /** 完整版本比较：数字段 → 代号（无代号 < 有代号）→ 代号序号 → 修订号 */
+    private fun isNewerVersion(remote: String, local: String): Boolean {
+        val r = parseVer(remote); val l = parseVer(local)
+        val n = maxOf(r.nums.size, l.nums.size)
+        for (i in 0 until n) {
+            val rv = r.nums.getOrElse(i) { 0 }; val lv = l.nums.getOrElse(i) { 0 }
+            if (rv != lv) return rv > lv
+        }
+        val rankR = if (r.stage.isEmpty()) 0 else 1
+        val rankL = if (l.stage.isEmpty()) 0 else 1
+        if (rankR != rankL) return rankR > rankL
+        if (r.stage != l.stage) return r.stage > l.stage
+        if (r.stageNo != l.stageNo) return r.stageNo > l.stageNo
+        return r.rev > l.rev
+    }
+
     suspend fun checkUpdate(rawCurrentVersion: String): ReleaseInfo? = withContext(Dispatchers.IO) {
         try {
-            val currentVersion = rawCurrentVersion.substringBefore("-").trim()
-            val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases?per_page=100").header("User-Agent", "LM-Downloader").build()
+            val currentVersion = rawCurrentVersion.trim()
+            val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases?per_page=100")
+                .header("User-Agent", "LM-Downloader").build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
                 val jsonArray = JsonParser.parseString(resp.body?.string()).asJsonArray
-                // 自识别通道：beta 包（applicationId 以 .beta 结尾）只吃 beta 资产，正式包只吃正式资产
+                // 通道识别按 applicationId 判断，比看资产名字更可靠
                 val isBeta = BuildConfig.APPLICATION_ID.endsWith(".beta") || BuildConfig.CHANNEL == "zeta"
-                val targetName = if (isBeta) "beta" else "omega"
                 var best: ReleaseInfo? = null
-                var maxVer = currentVersion
+                var bestVer: String? = null
 
                 for (element in jsonArray) {
                     val json = element.asJsonObject
                     if (json.get("draft")?.asBoolean == true || json.get("prerelease")?.asBoolean == true) continue
                     val tag = json.get("tag_name")?.asString ?: continue
                     val body = json.get("body")?.asString ?: ""
-                    val rawTag = tag.removePrefix("v").substringBefore("-").substringBefore("+").trim()
-                    // 优先命中通道名，退化为任意 APK（本项目产物名为 app-omega-release.apk）
+                    val version = tag.removePrefix("v").removeSuffix("-lm").removeSuffix("-LM")
+                        .removeSuffix("-beta").trim()
                     val assets = json.getAsJsonArray("assets")?.map { it.asJsonObject } ?: emptyList()
                     val apks = assets.filter { it.get("name")?.asString?.endsWith(".apk") == true }
-                    val sameChannel = apks.filter {
+
+                    // 优先选「品牌名 + 版本号」的成品包，排除 app-omega-release 这类内部名
+                    val branded = apks.filter { it.get("name")?.asString?.contains("LM-Ultra-Fast-Downloader", true) == true }
+                    val channel = branded.filter {
                         val n = it.get("name")?.asString?.lowercase() ?: ""
                         if (isBeta) n.contains("beta") else !n.contains("beta")
                     }
-                    val apkUrl = (sameChannel.firstOrNull()
-                        ?: apks.firstOrNull())
-                        ?.get("browser_download_url")?.asString
+                    val apk = channel.firstOrNull() ?: branded.firstOrNull() ?: apks.firstOrNull()
+                    val apkUrl = apk?.get("browser_download_url")?.asString
 
-                    if (!apkUrl.isNullOrBlank() && isNewer(rawTag, maxVer)) {
-                        maxVer = rawTag
-                        best = ReleaseInfo(rawTag, apkUrl, body, isBeta)
+                    if (!apkUrl.isNullOrBlank() && (bestVer == null || isNewerVersion(version, bestVer))
+                        && isNewerVersion(version, currentVersion)
+                    ) {
+                        bestVer = version
+                        best = ReleaseInfo(version, apkUrl, body, isBeta)
                     }
                 }
                 return@withContext best
             }
         } catch (e: Exception) { null }
-    }
-
-    private fun isNewer(remote: String, local: String): Boolean {
-        return try {
-            val r = remote.split(".").map { it.toIntOrNull() ?: 0 }
-            val l = local.split(".").map { it.toIntOrNull() ?: 0 }
-            for (i in 0 until maxOf(r.size, l.size)) {
-                if (r.getOrElse(i) { 0 } > l.getOrElse(i) { 0 }) return true
-                if (r.getOrElse(i) { 0 } < l.getOrElse(i) { 0 }) return false
-            }
-            false
-        } catch (e: Exception) { false }
     }
 
     fun showUpdateDialog(ctx: Context, info: ReleaseInfo) {

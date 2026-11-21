@@ -529,6 +529,24 @@ fun BrowserScreen(
     }
 
     /** 切走前存快照：滚动位置 + 当前画面缩略图 */
+    /** 切换 UA：统一处理 viewport / 缩放 / 渲染层，避免桌面模式划不动、换 UA 后卡顿 */
+    fun applyUserAgent(ua: String, desktop: Boolean) {
+        runCatching {
+            webView.settings.userAgentString = ua
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+            webView.settings.setSupportZoom(true)
+            webView.settings.builtInZoomControls = true
+            webView.settings.displayZoomControls = false
+            webView.setInitialScale(0)
+            // 换 UA 后若还留在软件渲染层会明显卡顿，这里强制回硬件层
+            webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+            webView.isNestedScrollingEnabled = true
+            webView.requestDisallowInterceptTouchEvent(false)
+        }
+        webView.reload()
+    }
+
     fun snapshotCurrent() {
         val tab = currentTab() ?: return
         runCatching {
@@ -878,8 +896,7 @@ fun BrowserScreen(
                             Switch(checked = desktopMode, onCheckedChange = {
                                 desktopMode = it
                                 BrowserPrefs.setDesktop(ctx, it)
-                                webView.settings.userAgentString = if (it) DESKTOP_UA else MOBILE_UA
-                                webView.reload()
+                                applyUserAgent(if (it) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx)), it)
                             })
                         }
                     }
@@ -1272,8 +1289,7 @@ fun BrowserScreen(
                             BrowserPrefs.setUaKey(ctx, preset.key)
                             BrowserPrefs.setDesktop(ctx, false)
                             desktopMode = false
-                            webView.settings.userAgentString = preset.ua
-                            webView.reload()
+                            applyUserAgent(preset.ua, preset.key.contains("windows") || preset.key.contains("mac"))
                             showUa = false
                         }.padding(vertical = 12.dp, horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically

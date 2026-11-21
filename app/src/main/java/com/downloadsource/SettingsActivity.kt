@@ -122,7 +122,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                     if (!checking) { 
                         checking = true; 
                         scope.launch { 
-                            val info = UpdateManager.checkUpdate(BuildConfig.VERSION_NAME.substringBefore("-"))
+                            val info = UpdateManager.checkUpdate(BuildConfig.VERSION_NAME)
                             checking = false; 
                             if (info != null) {
                                 UpdateManager.showUpdateDialog(ctx, info)
@@ -312,6 +312,11 @@ fun SettingsScreen(onClose: () -> Unit) {
                             versionClickCount = 0
                         }
                     }
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "包名 ${BuildConfig.APPLICATION_ID}",
+                    color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(

@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
                             SecureLockScreen(onUnlock = { isLocked = false }) 
                         } else {
                             var updateInfo by remember { mutableStateOf<UpdateManager.ReleaseInfo?>(null) }
-                            LaunchedEffect(Unit) { updateInfo = UpdateManager.checkUpdate(BuildConfig.VERSION_NAME.substringBefore("-")) }
+                            LaunchedEffect(Unit) { updateInfo = UpdateManager.checkUpdate(BuildConfig.VERSION_NAME) }
                             
                             if (clipboardUrl != null) {
                                 AlertDialog(
