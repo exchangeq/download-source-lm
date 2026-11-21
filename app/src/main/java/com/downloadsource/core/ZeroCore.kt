@@ -26,6 +26,8 @@ object ZeroCore {
     private external fun nativeCrc32(path: String): Long
     private external fun nativeSniffExt(head: ByteArray): String?
     private external fun nativeProbeZipKind(path: String): String?
+    private external fun nativeFitScale(contentW: Int, deviceW: Int): Int
+    private external fun nativeDarkenRgb565(pixels: ShortArray, count: Int, factor: Int)
 
     // --- 暴露给业务的降级方法 ---
 
@@ -78,6 +80,26 @@ object ZeroCore {
     fun probeZipKind(path: String): String? {
         if (isLoaded) runCatching { nativeProbeZipKind(path)?.takeIf { it.isNotBlank() }?.let { return it } }
         return null
+    }
+
+    /** C 层计算整页适配缩放百分比（内容超出屏宽时用） */
+    fun fitScale(contentW: Int, deviceW: Int): Int {
+        if (isLoaded) runCatching { nativeFitScale(contentW, deviceW).takeIf { it in 10..100 }?.let { return it } }
+        if (contentW <= 0 || deviceW <= 0) return 100
+        return ((deviceW.toDouble() * 100.0 / contentW).toInt()).coerceIn(10, 100)
+    }
+
+    /** C 层逐像素压暗 RGB565（供深色导出用） */
+    fun darkenRgb565(pixels: ShortArray, factor: Int) {
+        if (isLoaded) runCatching { nativeDarkenRgb565(pixels, pixels.size, factor); return }
+        val f = factor.coerceIn(0, 100)
+        for (i in pixels.indices) {
+            val p = pixels[i].toInt()
+            val r = ((p shr 11) and 0x1F) * f / 100
+            val g = ((p shr 5) and 0x3F) * f / 100
+            val b = (p and 0x1F) * f / 100
+            pixels[i] = ((r shl 11) or (g shl 5) or b).toShort()
+        }
     }
 
     fun crc32(path: String): Long {

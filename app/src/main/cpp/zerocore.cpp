@@ -243,3 +243,35 @@ Java_com_downloadsource_core_ZeroCore_nativeProbeZipKind(JNIEnv* env, jobject, j
 
     return kind.empty() ? nullptr : env->NewStringUTF(kind.c_str());
 }
+
+
+// ===== C 渲染计算层：整页适配缩放 + RGB 像素变换 =====
+extern "C" JNIEXPORT jint JNICALL
+Java_com_downloadsource_core_ZeroCore_nativeFitScale(JNIEnv*, jobject, jint contentW, jint deviceW) {
+    if (contentW <= 0 || deviceW <= 0) return 100;
+    // 内容宽超出屏幕时，算出能整页塞进屏幕的缩放百分比（10%~100%）
+    int scale = (int)((double)deviceW * 100.0 / (double)contentW);
+    if (scale > 100) scale = 100;
+    if (scale < 10) scale = 10;
+    return scale;
+}
+
+// RGB565 位图压暗（网页强制深色在截图/长截图导出时用，纯 C 逐像素，避免 JS 重排）
+extern "C" JNIEXPORT void JNICALL
+Java_com_downloadsource_core_ZeroCore_nativeDarkenRgb565(JNIEnv* env, jobject, jshortArray pixels, jint count, jint factor) {
+    if (pixels == nullptr || count <= 0) return;
+    jshort* data = env->GetShortArrayElements(pixels, nullptr);
+    if (data == nullptr) return;
+    int f = factor < 0 ? 0 : (factor > 100 ? 100 : factor);
+    for (int i = 0; i < count; i++) {
+        unsigned short p = (unsigned short)data[i];
+        int r = (p >> 11) & 0x1F;
+        int g = (p >> 5) & 0x3F;
+        int b = p & 0x1F;
+        r = (r * f) / 100;
+        g = (g * f) / 100;
+        b = (b * f) / 100;
+        data[i] = (jshort)((r << 11) | (g << 5) | b);
+    }
+    env->ReleaseShortArrayElements(pixels, data, 0);
+}

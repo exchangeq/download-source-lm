@@ -193,6 +193,7 @@ fun BrowserScreen(
     var blankPage by remember { mutableStateOf(true) }
     var autoReloadCount by remember { mutableIntStateOf(0) }
     var lastBlankWatchUrl by remember { mutableStateOf("") }
+    val autoFitDone = remember { mutableSetOf<String>() }
     var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
     var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
@@ -340,6 +341,23 @@ fun BrowserScreen(
                 if (siteJs.isNotBlank()) view?.evaluateJavascript("(function(){try{$siteJs}catch(e){console.warn('LM site script',e)}})();", null)
                 if (readerMode) view?.evaluateJavascript(WebScripts.readerMode, null)
                 view?.evaluateJavascript(com.downloadsource.web.WebScripts.ensureViewport, null)
+                if (url != null && url.startsWith("http") && !autoFitDone.contains(url)) {
+                    view?.evaluateJavascript("(function(){try{return (document.documentElement.scrollWidth||0)+':'+(window.innerWidth||0)}catch(e){return ''}})()") { r ->
+                        val raw = r?.trim()?.trim('"') ?: ""
+                        val cw = raw.substringBefore(':').toIntOrNull() ?: 0
+                        val dw = raw.substringAfter(':').toIntOrNull() ?: 0
+                        if (cw > 0 && dw > 0 && cw > dw * 115 / 100) {
+                            autoFitDone.add(url)
+                            val scale = com.downloadsource.core.ZeroCore.fitScale(cw, dw)
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                runCatching {
+                                    view?.setInitialScale(scale)
+                                    view?.reload()
+                                }
+                            }, 400)
+                        }
+                    }
+                }
                 // 白屏看门狗：页面「加载完成」但正文为空（站点脚本报错/被规则挡住/渲染进程异常）
                 if (!url.isNullOrBlank() && url.startsWith("http")) {
                     view?.evaluateJavascript(
