@@ -57,9 +57,7 @@ object QuarkParser {
                 val retryJson = JSONObject(client.newCall(retryReq).execute().body?.string() ?: "")
                 stoken = retryJson.optJSONObject("data")?.optString("stoken")?.takeIf { it.isNotBlank() }
                 if (stoken != null) {
-                    val res = mutableListOf<DiskParser.FileInfo>()
-                    fetchFolderWithPagination(fresh, shareId, stoken, "0", 1, res)
-                    return@withContext res
+                    return@withContext buildResult(ctx, fresh, shareId, stoken)
                 }
             }
         }
@@ -70,79 +68,124 @@ object QuarkParser {
                 error("获取 Token 失败（${tokenJson.optInt("code")}）：$msg。请先在浏览器里打开夸克分享页并登录")
             }
 
-        val results = mutableListOf<DiskParser.FileInfo>()
-        // 开启分页拉取，每次拉 50 个
-        fetchFolderWithPagination(cookie, shareId, failure, "0", 1, results)
-        results
+        buildResult(ctx, cookie, shareId, failure)
     }
 
-    private fun fetchFolderWithPagination(cookie: String, shareId: String, stoken: String, pdirFid: String, startPage: Int, results: MutableList<DiskParser.FileInfo>) {
-        var page = startPage
+    /** 缓存 → 目录树 → 批量直链 */
+    private fun buildResult(ctx: Context, cookie: String, shareId: String, stoken: String): List<DiskParser.FileInfo> {
+        readCache(ctx, shareId)?.let { return it }
+        val entries = mutableListOf<Pair<String, Entry>>()
+        collectTree(cookie, shareId, stoken, "0", "", entries)
+        if (entries.isEmpty()) error("分享里没有可下载的文件（可能是空文件夹或链接已失效）")
+        val links = resolveLinks(cookie, shareId, stoken, entries.map { it.second.fid })
+        val list = entries.mapNotNull { (path, e) ->
+            val url = links[e.fid]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            DiskParser.FileInfo(path, url, e.size)
+        }
+        if (list.isEmpty()) error("文件列表已读取，但直链全部获取失败（多为 Cookie 失效或被风控，请在浏览器重新登录夸克后再试）")
+        writeCache(ctx, shareId, list)
+        return list
+    }
+
+    private data class Entry(val fid: String, val name: String, val size: Long)
+
+    private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+
+    /** 深度优先收集目录树，文件名前缀带上级目录，下载下来能看出归属 */
+    private fun collectTree(cookie: String, shareId: String, stoken: String, pdirFid: String, prefix: String, out: MutableList<Pair<String, Entry>>, depth: Int = 0) {
+        if (depth > 6) return
+        var page = 1
         var hasMore = true
-        
         while (hasMore) {
             val detailApi = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken&pdir_fid=$pdirFid&force=0&_page=$page&_size=50"
-            val detailReq = Request.Builder().url(detailApi)
+            val req = Request.Builder().url(detailApi)
                 .header("Cookie", cookie)
                 .header("Referer", "https://pan.quark.cn/")
                 .header("Origin", "https://pan.quark.cn")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
+                .header("User-Agent", UA)
                 .header("Accept", "application/json, text/plain, */*")
                 .build()
-            val detailJson = JSONObject(client.newCall(detailReq).execute().body?.string() ?: "")
-            if (detailJson.optInt("code", 0) != 0 && detailJson.optJSONObject("data") == null) {
-                val msg = detailJson.optString("message")
-                error("读取分享目录失败（${detailJson.optInt("code")}）：$msg")
+            val json = JSONObject(client.newCall(req).execute().use { it.body?.string() ?: "" })
+            if (json.optInt("code", 0) != 0 && json.optJSONObject("data") == null) {
+                if (out.isNotEmpty()) break
+                error("读取分享目录失败（${json.optInt("code")}）：${json.optString("message")}")
             }
-            val dataObj = detailJson.optJSONObject("data")
-                ?: run {
-                    val msg = detailJson.optString("message")
-                    error("读取分享目录失败：$msg（Cookie 可能已过期，请在浏览器重新登录夸克）")
-                }
-            val list = dataObj.optJSONArray("list") ?: break
-            
-            if (list.length() == 0) { hasMore = false; break }
-
+            val data = json.optJSONObject("data") ?: break
+            val list = data.optJSONArray("list") ?: break
+            if (list.length() == 0) break
             for (i in 0 until list.length()) {
-                val file = list.getJSONObject(i)
-                val fid = file.optString("fid")
-                val name = file.optString("file_name")
-                val isDir = file.optBoolean("dir")
-                val size = file.optLong("size", 0L)
-
-                if (isDir) {
-                    // 递归进入子文件夹
-                    fetchFolderWithPagination(cookie, shareId, stoken, fid, 1, results)
+                val f = list.getJSONObject(i)
+                val fid = f.optString("fid")
+                val name = f.optString("file_name").ifBlank { "未命名" }
+                if (f.optBoolean("dir")) {
+                    collectTree(cookie, shareId, stoken, fid, "$prefix$name/", out, depth + 1)
                 } else {
-                    // 分享文件下载接口有多个版本，逐个尝试，命中即用
-                    var dlUrl: String? = null
-                    for (api in listOf(
-                        "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken",
-                        "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc",
-                        "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
-                    )) {
-                        val dlBody = """{"fids":["$fid"],"pwd_id":"$shareId","stoken":"$stoken"}"""
-                        val dlReq = Request.Builder().url(api)
-                            .post(dlBody.toRequestBody("application/json".toMediaType()))
-                            .header("Cookie", cookie).header("Referer", "https://pan.quark.cn/")
-                            .header("Origin", "https://pan.quark.cn").header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
-                            .build()
-                        val txt = runCatching { client.newCall(dlReq).execute().use { it.body?.string() ?: "" } }.getOrDefault("")
-                        val json = runCatching { JSONObject(txt) }.getOrNull()
-                        dlUrl = json?.optJSONArray("data")?.let { arr ->
-                            if (arr.length() == 0) null else arr.optJSONObject(0)?.optString("download_url")
-                        }?.takeIf { it.isNotBlank() } ?: json?.optJSONObject("data")?.optString("download_url")?.takeIf { it.isNotBlank() }
-                        if (dlUrl != null) break
-                    }
-                    if (!dlUrl.isNullOrBlank()) {
-                        results.add(DiskParser.FileInfo(name, dlUrl, size))
+                    out.add(prefix + name to Entry(fid, name, f.optLong("size", 0L)))
+                }
+            }
+            if (list.length() < 50) hasMore = false else page++
+        }
+    }
+
+    /** 批量取直链：一次最多 30 个 fid，失败再单个兜底，比逐个请求快一个数量级 */
+    private fun resolveLinks(cookie: String, shareId: String, stoken: String, fids: List<String>): MutableMap<String, String> {
+        val map = mutableMapOf<String, String>()
+        val apis = listOf(
+            "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken",
+            "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc"
+        )
+        fun one(api: String, ids: List<String>): Boolean {
+            val body = """{"fids":[${ids.joinToString(",") { "\"$it\"" }}],"pwd_id":"$shareId","stoken":"$stoken"}"""
+            val req = Request.Builder().url(api).post(body.toRequestBody("application/json".toMediaType()))
+                .header("Cookie", cookie).header("Referer", "https://pan.quark.cn/")
+                .header("Origin", "https://pan.quark.cn").header("User-Agent", UA)
+                .build()
+            val txt = runCatching { client.newCall(req).execute().use { it.body?.string() ?: "" } }.getOrDefault("")
+            val json = runCatching { JSONObject(txt) }.getOrNull() ?: return false
+            val arr = json.optJSONArray("data") ?: return false
+            var got = 0
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val url = o.optString("download_url")
+                if (url.isNotBlank()) {
+                    val fid = o.optString("fid")
+                    if (fid.isNotBlank()) map[fid] = url else if (i < ids.size) map[ids[i]] = url
+                    got++
+                }
+            }
+            return got > 0
+        }
+        for (chunk in fids.chunked(30)) {
+            var done = false
+            for (api in apis) { if (one(api, chunk)) { done = true; break } }
+            if (!done) {
+                // 批量不支持时逐个来，保证不丢文件
+                chunk.forEach { fid ->
+                    if (map[fid] == null) {
+                        for (api in apis) { if (one(api, listOf(fid))) break }
                     }
                 }
             }
-            
-            // 如果返回的数量小于 50，说明没有下一页了
-            if (list.length() < 50) hasMore = false
-            else page++
         }
+        return map
+    }
+
+    // ---- 解析结果缓存（15 分钟内重复解析秒开） ----
+    private fun cacheFile(ctx: Context, shareId: String) = java.io.File(ctx.cacheDir, "quark_$shareId.json")
+
+    private fun readCache(ctx: Context, shareId: String): List<DiskParser.FileInfo>? = runCatching {
+        val f = cacheFile(ctx, shareId)
+        if (!f.exists() || System.currentTimeMillis() - f.lastModified() > 15 * 60_000L) return null
+        val arr = org.json.JSONArray(f.readText())
+        (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            DiskParser.FileInfo(o.optString("n"), o.optString("u"), o.optLong("s", 0L))
+        }
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    private fun writeCache(ctx: Context, shareId: String, list: List<DiskParser.FileInfo>) = runCatching {
+        val arr = org.json.JSONArray()
+        list.forEach { val o = JSONObject(); o.put("n", it.name); o.put("u", it.url); o.put("s", it.size); arr.put(o) }
+        cacheFile(ctx, shareId).writeText(arr.toString())
     }
 }

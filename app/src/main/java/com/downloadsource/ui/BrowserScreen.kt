@@ -779,17 +779,7 @@ fun BrowserScreen(
                 Spacer(Modifier.width(6.dp))
                 Box(
                     Modifier.weight(1f).height(if (browserUi == 1) 50.dp else if (browserUi == 2) 38.dp else 44.dp).clip(RoundedCornerShape(if (browserUi == 1) 25.dp else if (browserUi == 2) 19.dp else 22.dp))
-                        .combinedClickable(
-                            onClick = { addressFocused = true },
-                            onLongClick = {
-                                val u = webView.url ?: urlInput
-                                if (u.isNotBlank()) {
-                                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    cm.setPrimaryClip(android.content.ClipData.newPlainText("url", u))
-                                    android.widget.Toast.makeText(ctx, "已复制当前链接", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
+
                         .background(palette.surface)
                         .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), palette.onSurface.copy(alpha = 0.12f))), RoundedCornerShape(if (browserUi == 1) 25.dp else if (browserUi == 2) 19.dp else 22.dp))
                 ) {
@@ -1203,12 +1193,20 @@ fun BrowserScreen(
                         tabs.add(tab); activeId = tab.id; showTabs = false
                     }) { Text("新建") }
                     TextButton(onClick = {
-                        // 小功能④：一键关闭全部标签，保留一个空白页
-                        val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
-                        tabs.clear(); tabs.add(fresh); activeId = fresh.id
-                        urlInput = ""; blankPage = true
-                        runCatching { webView.loadUrl("about:blank") }
-                        showTabs = false
+                        // 关闭全部标签前二次确认，避免误触把会话清空
+                        android.app.AlertDialog.Builder(ctx)
+                            .setTitle("关闭全部标签？")
+                            .setMessage("将关闭 ${tabs.size} 个标签页，并清空它们的缩略图缓存。")
+                            .setPositiveButton("全部关闭") { _, _ ->
+                                tabs.forEach { com.downloadsource.storage.TabThumbStore.clear(ctx, it.id) }
+                                val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
+                                tabs.clear(); tabs.add(fresh); activeId = fresh.id
+                                urlInput = ""; blankPage = true
+                                runCatching { webView.loadUrl("about:blank") }
+                                showTabs = false
+                            }
+                            .setNegativeButton("取消", null)
+                            .show()
                     }) { Text("全部关闭") }
                     TextButton(onClick = { showTabs = false }) { Text("完成") }
                 }
