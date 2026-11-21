@@ -24,6 +24,19 @@ object BrowserPrefs {
 
     // 文字缩放
     fun getZoom(ctx: Context): Int = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getInt("text_zoom", 100)
+    /** 站点级文字缩放记忆 */
+    fun setHostZoom(ctx: Context, host: String, value: Int) {
+        if (host.isBlank()) return
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putInt("zoom_$host", value).apply()
+    }
+
+    fun getHostZoom(ctx: Context, host: String): Int? {
+        if (host.isBlank()) return null
+        val sp = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        if (!sp.contains("zoom_$host")) return null
+        return sp.getInt("zoom_$host", 100)
+    }
+
     fun setZoom(ctx: Context, value: Int) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putInt("text_zoom", value).apply() }
 
     /** 浏览器界面样式：0 标准 / 1 紧凑 / 2 悬浮 */

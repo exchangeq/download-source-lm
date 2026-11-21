@@ -192,6 +192,17 @@ fun BrowserScreen(
     var adBlockOn by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.isEnabled(ctx)) }
     var blankPage by remember { mutableStateOf(true) }
     var autoReloadCount by remember { mutableIntStateOf(0) }
+    var ttsSpeaking by remember { mutableStateOf(false) }
+    val tts = remember {
+        var engineRef: android.speech.tts.TextToSpeech? = null
+        runCatching {
+            engineRef = android.speech.tts.TextToSpeech(ctx) { }
+        }
+        engineRef
+    }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { tts?.stop(); tts?.shutdown() } }
+    }
     var lastBlankWatchUrl by remember { mutableStateOf("") }
     val autoFitDone = remember { mutableSetOf<String>() }
     var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
@@ -341,6 +352,14 @@ fun BrowserScreen(
                 if (siteJs.isNotBlank()) view?.evaluateJavascript("(function(){try{$siteJs}catch(e){console.warn('LM site script',e)}})();", null)
                 if (readerMode) view?.evaluateJavascript(WebScripts.readerMode, null)
                 view?.evaluateJavascript(com.downloadsource.web.WebScripts.ensureViewport, null)
+                // 站点级缩放记忆：回到同一站点自动套用上次的缩放
+                if (url != null && url.startsWith("http")) {
+                    val saved = BrowserPrefs.getHostZoom(ctx, SiteScriptStore.hostOf(url))
+                    if (saved != null && saved != zoom) {
+                        zoom = saved
+                        view?.settings?.textZoom = saved.coerceIn(85, 130)
+                    }
+                }
                 if (url != null && url.startsWith("http") && !autoFitDone.contains(url)) {
                     view?.evaluateJavascript("(function(){try{return (document.documentElement.scrollWidth||0)+':'+(window.innerWidth||0)}catch(e){return ''}})()") { r ->
                         val raw = r?.trim()?.trim('"') ?: ""
@@ -875,6 +894,12 @@ fun BrowserScreen(
                         Row {
                             TextButton(onClick = { pageError = null; webView.reload() }) { Text("重试") }
                             TextButton(onClick = {
+                                pageError = null
+                                BrowserPrefs.setDesktop(ctx, false)
+                                desktopMode = false
+                                applyUserAgent(UserAgents.resolve(BrowserPrefs.getUaKey(ctx)), false)
+                            }) { Text("换移动 UA") }
+                            TextButton(onClick = {
                                 val host = SiteScriptStore.hostOf(webView.url ?: urlInput)
                                 val on = RenderCompatStore.toggle(ctx, host)
                                 pageError = null
@@ -989,6 +1014,59 @@ fun BrowserScreen(
                     item { MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) } }
                     item { MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) } }
                     item { MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) } }
+                    item { MenuItem("分享当前页面", Icons.AutoMirrored.Filled.Send, palette) {
+                        showMenu = false
+                        val target = webView.url ?: urlInput
+                        if (target.isNotBlank()) {
+                            runCatching {
+                                ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_SUBJECT, pageTitle.ifBlank { target })
+                                    putExtra(android.content.Intent.EXTRA_TEXT, pageTitle.ifBlank { "" } + "\n" + target)
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                })
+                            }.onFailure { android.widget.Toast.makeText(ctx, "没有可分享的应用", android.widget.Toast.LENGTH_SHORT).show() }
+                        }
+                    } }
+                    item { MenuItem(if (ttsSpeaking) "停止朗读" else "朗读正文", Icons.Default.PlayArrow, palette) {
+                        showMenu = false
+                        if (ttsSpeaking) {
+                            runCatching { tts?.stop() }
+                            ttsSpeaking = false
+                        } else {
+                            webView.evaluateJavascript("(function(){try{return (document.body?document.body.innerText:'').slice(0,6000)}catch(e){return ''}})()") { r ->
+                                val text = runCatching { org.json.JSONTokener(r ?: "").nextValue() as String }.getOrDefault("")
+                                if (text.isBlank()) {
+                                    android.widget.Toast.makeText(ctx, "页面没有可朗读的文字", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    runCatching {
+                                        tts?.language = java.util.Locale.getDefault()
+                                        tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "lm_read")
+                                        ttsSpeaking = true
+                                    }.onFailure { android.widget.Toast.makeText(ctx, "朗读不可用", android.widget.Toast.LENGTH_SHORT).show() }
+                                }
+                            }
+                        }
+                    } }
+                    item { MenuItem("清理浏览器缓存", Icons.Default.Delete, palette) {
+                        showMenu = false
+                        runCatching {
+                            webView.clearCache(true)
+                            webView.clearFormData()
+                            android.webkit.WebStorage.getInstance().deleteAllData()
+                            android.widget.Toast.makeText(ctx, "缓存已清理（登录状态保留）", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    } }
+                    item { MenuItem("记住本站文字缩放", Icons.Default.Refresh, palette) {
+                        showMenu = false
+                        val host = SiteScriptStore.hostOf(webView.url ?: urlInput)
+                        if (host.isBlank()) {
+                            android.widget.Toast.makeText(ctx, "当前没有可记录的站点", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            BrowserPrefs.setHostZoom(ctx, host, zoom)
+                            android.widget.Toast.makeText(ctx, "已记住 $host 的缩放为 $zoom%", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    } }
                     item { MenuItem("数据管理", Icons.Default.Delete, palette) { showMenu = false; showDataPanel = true } }
                     item { HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f)) }
                     item {
@@ -1690,22 +1768,72 @@ private fun clearBrowserData(ctx: android.content.Context, webView: WebView) {
     android.widget.Toast.makeText(ctx, "缓存与 Cookie 已清除", android.widget.Toast.LENGTH_SHORT).show()
 }
 
-/** 长截图：优先整页 Picture，失败退化为可视区域 */
+/** 长截图：分块滚动逐屏绘制再拼成整页，最多 12000px，避免 OOM */
 private fun saveLongScreenshot(ctx: android.content.Context, webView: WebView, palette: GradientPalette) {
-    try {
-        val width = webView.width.coerceAtLeast(1)
-        val height = webView.height.coerceAtLeast(1)
-        val bmp = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+    webView.evaluateJavascript(
+        "(function(){try{var h=Math.max(document.documentElement.scrollHeight||0,document.body?document.body.scrollHeight:0);return String(h);}catch(e){return '0';}})()"
+    ) { raw ->
+        val contentH = raw?.trim()?.trim('"')?.toIntOrNull() ?: 0
+        val w = webView.width.coerceAtLeast(1)
+        val vh = webView.height.coerceAtLeast(1)
+        val total = contentH.coerceIn(vh, 12000)
+        val originalScroll = webView.scrollY
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+        val bmp = try {
+            android.graphics.Bitmap.createBitmap(w, total, android.graphics.Bitmap.Config.ARGB_8888)
+        } catch (e: Throwable) {
+            android.widget.Toast.makeText(ctx, "页面太长，内存不足，已改截当前屏", android.widget.Toast.LENGTH_SHORT).show()
+            saveViewportShot(ctx, webView)
+            return@evaluateJavascript
+        }
         val canvas = android.graphics.Canvas(bmp)
-        webView.draw(canvas)
+        var y = 0
+        var lastDrawn = -1
+        lateinit var step: Runnable
+        step = Runnable {
+            if (y >= total) {
+                runCatching { webView.scrollTo(0, originalScroll) }
+                finishLongShot(ctx, bmp)
+                return@Runnable
+            }
+            if (lastDrawn != y) {
+                webView.scrollTo(0, y)
+                lastDrawn = y
+                handler.postDelayed(step, 260)
+                return@Runnable
+            }
+            canvas.save()
+            canvas.translate(0f, y.toFloat())
+            runCatching { webView.draw(canvas) }
+            canvas.restore()
+            y += vh
+            lastDrawn = -1
+            handler.postDelayed(step, 80)
+        }
+        handler.post(step)
+    }
+}
+
+private fun saveViewportShot(ctx: android.content.Context, webView: WebView) {
+    runCatching {
+        val bmp = android.graphics.Bitmap.createBitmap(webView.width.coerceAtLeast(1), webView.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+        webView.draw(android.graphics.Canvas(bmp))
+        finishLongShot(ctx, bmp)
+    }
+}
+
+private fun finishLongShot(ctx: android.content.Context, bmp: android.graphics.Bitmap) {
+    try {
         val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), "LM")
             .let { if (it.exists() || it.mkdirs()) it else java.io.File(ctx.filesDir, "shots") }
         val file = java.io.File(dir, "shot_${System.currentTimeMillis()}.png")
         java.io.FileOutputStream(file).use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, it) }
-        bmp.recycle()
         android.widget.Toast.makeText(ctx, "已保存：${file.absolutePath}", android.widget.Toast.LENGTH_LONG).show()
     } catch (e: Exception) {
         android.widget.Toast.makeText(ctx, "截图失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    } finally {
+        bmp.recycle()
     }
 }
 
