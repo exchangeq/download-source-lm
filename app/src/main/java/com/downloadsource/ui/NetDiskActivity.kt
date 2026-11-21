@@ -82,6 +82,11 @@ fun NetDiskScreen(onBack: () -> Unit) {
                             errorMsg = "无法识别该网盘"
                         } else {
                             parsedFiles = DiskParser.parse(ctx, share)
+                            android.widget.Toast.makeText(
+                                ctx,
+                                "解析到 ${parsedFiles.size} 个文件（${parsedFiles.sumOf { it.size } / 1024 / 1024} MB）",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
                         }
                     } catch (e: Exception) {
                         errorMsg = e.message
@@ -91,8 +96,11 @@ fun NetDiskScreen(onBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             enabled = !isLoading
         ) {
-            if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-            else Text("一键解析")
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("读取目录树与直链，大分享需要十几秒")
+            } else Text("一键解析")
         }
 
         if (errorMsg != null) {
@@ -101,7 +109,7 @@ fun NetDiskScreen(onBack: () -> Unit) {
 
         if (parsedFiles.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("共 ${parsedFiles.size} 个文件", fontWeight = FontWeight.Bold, color = palette.onSurface)
+                Text("共 ${parsedFiles.size} 个文件 · ${parsedFiles.sumOf { it.size } / 1024 / 1024} MB", fontWeight = FontWeight.Bold, color = palette.onSurface)
                 TextButton(onClick = {
                     if (selectedFiles.size == parsedFiles.size) selectedFiles = emptySet()
                     else selectedFiles = parsedFiles.map { it.name }.toSet()

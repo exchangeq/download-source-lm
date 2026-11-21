@@ -72,18 +72,21 @@ object QuarkParser {
     }
 
     /** 缓存 → 目录树 → 批量直链 */
+    /** 缓存只存目录树（名字/fid/大小），直链每次现取——夸克直链会过期，缓存链接必然下载失败 */
     private fun buildResult(ctx: Context, cookie: String, shareId: String, stoken: String): List<DiskParser.FileInfo> {
-        readCache(ctx, shareId)?.let { return it }
-        val entries = mutableListOf<Pair<String, Entry>>()
-        collectTree(cookie, shareId, stoken, "0", "", entries)
-        if (entries.isEmpty()) error("分享里没有可下载的文件（可能是空文件夹或链接已失效）")
+        val entries = readTreeCache(ctx, shareId) ?: run {
+            val collected = mutableListOf<Pair<String, Entry>>()
+            collectTree(cookie, shareId, stoken, "0", "", collected)
+            if (collected.isEmpty()) error("分享里没有可下载的文件（可能是空文件夹或链接已失效）")
+            writeTreeCache(ctx, shareId, collected)
+            collected
+        }
         val links = resolveLinks(cookie, shareId, stoken, entries.map { it.second.fid })
         val list = entries.mapNotNull { (path, e) ->
             val url = links[e.fid]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             DiskParser.FileInfo(path, url, e.size)
         }
-        if (list.isEmpty()) error("文件列表已读取，但直链全部获取失败（多为 Cookie 失效或被风控，请在浏览器重新登录夸克后再试）")
-        writeCache(ctx, shareId, list)
+        if (list.isEmpty()) error("文件列表已读取（${entries.size} 个），但直链全部获取失败：多为 Cookie 失效或被风控，请在浏览器重新登录夸克后再试")
         return list
     }
 
@@ -170,22 +173,27 @@ object QuarkParser {
         return map
     }
 
-    // ---- 解析结果缓存（15 分钟内重复解析秒开） ----
-    private fun cacheFile(ctx: Context, shareId: String) = java.io.File(ctx.cacheDir, "quark_$shareId.json")
+    // ---- 目录树缓存（30 分钟内免重新翻页；直链仍每次实时取） ----
+    private fun cacheFile(ctx: Context, shareId: String) = java.io.File(ctx.cacheDir, "quark_tree_$shareId.json")
 
-    private fun readCache(ctx: Context, shareId: String): List<DiskParser.FileInfo>? = runCatching {
+    private fun readTreeCache(ctx: Context, shareId: String): List<Pair<String, Entry>>? = runCatching {
         val f = cacheFile(ctx, shareId)
-        if (!f.exists() || System.currentTimeMillis() - f.lastModified() > 15 * 60_000L) return null
+        if (!f.exists() || System.currentTimeMillis() - f.lastModified() > 30 * 60_000L) return null
         val arr = org.json.JSONArray(f.readText())
+        if (arr.length() == 0) return null
         (0 until arr.length()).map {
             val o = arr.getJSONObject(it)
-            DiskParser.FileInfo(o.optString("n"), o.optString("u"), o.optLong("s", 0L))
+            o.optString("p") to Entry(o.optString("f"), o.optString("n"), o.optLong("s", 0L))
         }
     }.getOrNull()?.takeIf { it.isNotEmpty() }
 
-    private fun writeCache(ctx: Context, shareId: String, list: List<DiskParser.FileInfo>) = runCatching {
+    private fun writeTreeCache(ctx: Context, shareId: String, list: List<Pair<String, Entry>>) = runCatching {
         val arr = org.json.JSONArray()
-        list.forEach { val o = JSONObject(); o.put("n", it.name); o.put("u", it.url); o.put("s", it.size); arr.put(o) }
+        list.forEach { (path, e) ->
+            val o = JSONObject()
+            o.put("p", path); o.put("f", e.fid); o.put("n", e.name); o.put("s", e.size)
+            arr.put(o)
+        }
         cacheFile(ctx, shareId).writeText(arr.toString())
     }
 }
