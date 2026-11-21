@@ -66,6 +66,15 @@ object DownloadManager {
     }
 
     fun add(context: Context, url: String, customName: String?, threads: Int, speedLimitKb: Long, headers: Map<String, String>, baseDir: File) {
+        // 安全检查：只接受 http(s)，拒绝 file:// / content:// 等本地协议注入
+        if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
+            scope.launch { withContext(Dispatchers.Main) { android.widget.Toast.makeText(context, "不支持的链接协议，仅支持 http/https", android.widget.Toast.LENGTH_SHORT).show() } }
+            return
+        }
+        if (!baseDir.exists() && !baseDir.mkdirs()) {
+            scope.launch { withContext(Dispatchers.Main) { android.widget.Toast.makeText(context, "无法创建保存目录", android.widget.Toast.LENGTH_SHORT).show() } }
+            return
+        }
         val tempName = customName?.let { sanitizeFileName(it) } ?: "parsing_${System.currentTimeMillis()}"
         // 补默认 UA / Accept：不少站点对裸客户端限速或直接 403
         val finalHeaders = buildMap<String, String> {
@@ -189,6 +198,19 @@ object DownloadManager {
             head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte() -> "jpg"
             head[0] == 0x1A.toByte() && head[1] == 0x45.toByte() && head[2] == 0xDF.toByte() -> "mkv"
             head[0] == 0x50.toByte() && head[1] == 0x4B.toByte() -> "zip"
+            head[0] == 0x52.toByte() && head[1] == 0x49.toByte() && head[2] == 0x46.toByte() && head[3] == 0x46.toByte() && head[8] == 0x57.toByte() -> "webp"
+            head[0] == 0x52.toByte() && head[1] == 0x49.toByte() && head[2] == 0x46.toByte() && head[3] == 0x46.toByte() -> "wav"
+            head[0] == 0x23.toByte() && head[1] == 0x21.toByte() && head[2] == 0x41.toByte() -> "amr"
+            head[0] == 0x66.toByte() && head[1] == 0x74.toByte() && head[2] == 0x79.toByte() -> "mp4"
+            head[0] == 0x46.toByte() && head[1] == 0x4C.toByte() && head[2] == 0x56.toByte() -> "flv"
+            head[0] == 0x30.toByte() && head[1] == 0x26.toByte() && head[2] == 0xB2.toByte() && head[3] == 0x75.toByte() -> "wma"
+            head[0] == 0x7F.toByte() && head[1] == 0x45.toByte() && head[2] == 0x4C.toByte() && head[3] == 0x46.toByte() -> "elf"
+            head[0] == 0xCA.toByte() && head[1] == 0xFE.toByte() && head[2] == 0xBA.toByte() && head[3] == 0xBE.toByte() -> "class"
+            head[0] == 0x53.toByte() && head[1] == 0x51.toByte() && head[2] == 0x4C.toByte() && head[3] == 0x69.toByte() -> "sqlite"
+            head[0] == 0x00.toByte() && head[1] == 0x01.toByte() && head[2] == 0x00.toByte() -> "ttf"
+            head[0] == 0x4F.toByte() && head[1] == 0x54.toByte() && head[2] == 0x54.toByte() && head[3] == 0x4F.toByte() -> "otf"
+            head[0] == 0x4D.toByte() && head[1] == 0x5A.toByte() -> "exe"
+            head[0] == 0x1F.toByte() && head[1] == 0x9D.toByte() -> "z"
             head[4] == 0x66.toByte() && head[5] == 0x74.toByte() && head[6] == 0x79.toByte() && head[7] == 0x70.toByte() -> {
                 val brand = String(head.copyOfRange(8, 12), Charsets.ISO_8859_1)
                 if (brand.startsWith("M4A")) "m4a" else if (brand.startsWith("qt")) "mov" else "mp4"

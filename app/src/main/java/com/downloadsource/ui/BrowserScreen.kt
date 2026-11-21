@@ -300,7 +300,13 @@ fun BrowserScreen(
                 progress = 100
                 if (url != null) {
                     syncTab(url)
-                    persistTabs()
+                    if (!incognito) runCatching {
+                        com.downloadsource.storage.TabStore.save(
+                            ctx,
+                            tabs.map { com.downloadsource.storage.TabStore.SavedTab(it.id, it.title, it.url, it.scrollY) },
+                            activeId
+                        )
+                    }
                     lastHost = SiteScriptStore.hostOf(url)
                     if (!addressFocused) urlInput = url
                     if (!incognito && !url.startsWith("about:")) BrowserHistoryStore.addHistory(ctx, url)
@@ -611,8 +617,10 @@ fun BrowserScreen(
 
     LaunchedEffect(activeId) {
         val tab = currentTab() ?: return@LaunchedEffect
-        urlInput = tab.url
-        webView.loadUrl(tab.url)
+        val target = tab.url.ifBlank { "about:blank" }
+        urlInput = if (target == "about:blank") "" else target
+        blankPage = target == "about:blank"
+        webView.loadUrl(target)
     }
 
     LaunchedEffect(rebuildTick) {
@@ -771,7 +779,8 @@ fun BrowserScreen(
                             tabs.add(t); activeId = t.id
                             webView.loadUrl(link)
                         },
-                        onEngines = { showEnginePicker = true }
+                        onEngines = { showEnginePicker = true },
+                        onDismiss = { blankPage = false; webView.loadUrl(engine.homeUrl) }
                     )
                 }
                 pageError?.let { err ->
@@ -1686,7 +1695,8 @@ private fun BrowserStartPage(
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
     onOpen: (String) -> Unit,
-    onEngines: () -> Unit
+    onEngines: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     val sites = listOf(
         "百度" to "https://www.baidu.com",
@@ -1780,7 +1790,9 @@ private fun BrowserStartPage(
                 }
             }
         }
-        Spacer(Modifier.height(16.dp))
-        TextButton(onClick = onEngines) { Text("切换搜索引擎") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onEngines) { Text("切换搜索引擎") }
+            TextButton(onClick = onDismiss) { Text("跳过，直接浏览") }
+        }
     }
 }

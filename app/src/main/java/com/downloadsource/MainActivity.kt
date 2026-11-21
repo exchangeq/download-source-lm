@@ -74,6 +74,17 @@ class MainActivity : ComponentActivity() {
         return (System.currentTimeMillis() - ThemeStore.getLastUnlockTime(this)) > 900_000L
     }
 
+    private fun showDisclaimerIfNeeded() {
+        if (com.downloadsource.storage.DisclaimerStore.isAccepted(this)) return
+        android.app.AlertDialog.Builder(this)
+            .setTitle("使用前请阅读")
+            .setMessage(com.downloadsource.storage.DisclaimerStore.TEXT)
+            .setCancelable(false)
+            .setPositiveButton("同意并继续") { _, _ -> com.downloadsource.storage.DisclaimerStore.accept(this) }
+            .setNegativeButton("不同意，退出") { _, _ -> finish() }
+            .show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -83,6 +94,7 @@ class MainActivity : ComponentActivity() {
         }
         PyRuleEngine.init(this)
         com.downloadsource.storage.UpgradeKeeper.run(this, BuildConfig.VERSION_NAME)
+        showDisclaimerIfNeeded()
         setContent {
             val palette = rememberPalette()
             Box(Modifier.fillMaxSize().background(palette.background.first())) {

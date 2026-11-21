@@ -84,7 +84,31 @@ object FileNameResolver {
         // 图片
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic",
         // 其它
-        "torrent", "bin", "dat", "db"
+        "torrent", "bin", "dat", "db",
+        // 更多容器/镜像/资源包
+        "mpkg", "apkm", "apkx", "obb", "pkg", "ipa", "xap", "msix", "appx", "snap", "flatpak", "wasm",
+        "img", "vmdk", "qcow2", "vdi", "vhdx", "dmg", "pkg", "nrg", "mdf", "ccd", "cue", "bwg", "bin",
+        "m3u", "pls", "cue", "nfo", "sfv", "par2", "r00", "r01", "001", "002",
+        "m2ts", "mts", "vob", "asf", "f4v", "divx", "xvid", "mpeg", "mpg", "mpe", "m1v", "m2v",
+        "aif", "aiff", "au", "snd", "ra", "rm", "amr", "mka", "tta", "ac3", "dts", "m4b", "m4p", "m4r",
+        "webp", "avif", "heif", "jxl", "tiff", "tif", "psd", "ai", "eps", "ico", "icns", "dds", "exr", "hdr",
+        "ttf", "otf", "woff", "woff2", "eot",
+        "epub", "mobi", "azw", "azw3", "fb2", "cbz", "cbr", "djvu", "xps", "oxps",
+        "docm", "dot", "dotx", "xlsm", "xlsb", "xlt", "xltx", "pptm", "pot", "potx", "pps", "ppsx",
+        "odt", "ods", "odp", "rtf", "pages", "numbers", "key",
+        "sqlite", "sqlite3", "mdb", "accdb", "realm", "lmdb",
+        "java", "class", "jar", "war", "ear", "aar", "so", "dll", "dylib", "sys", "ko", "elf", "dex",
+        "nsp", "xci", "cia", "3ds", "nds", "gba", "gbc", "iso", "cso", "chd", "rvz", "wbfs",
+        "torrent", "magnet", "metalink", "md5", "sha1", "sha256", "sig", "asc", "pem", "crt", "cer", "der", "p12", "pfx",
+        "json", "jsonl", "ndjson", "yaml", "yml", "toml", "ini", "conf", "cfg", "properties", "log",
+        "html", "htm", "xhtml", "css", "js", "mjs", "ts", "tsx", "jsx", "vue", "svelte",
+        "php", "py", "rb", "go", "rs", "c", "h", "cpp", "hpp", "cs", "swift", "kt", "kts", "sh", "bat", "ps1",
+        "csv", "tsv", "parquet", "avro", "orc", "feather", "h5", "hdf5", "npy", "npz", "pkl", "pt", "onnx", "tflite", "gguf",
+        "blend", "fbx", "obj", "stl", "gltf", "glb", "dae", "3ds", "max", "ma", "mb", "unitypackage",
+        "psb", "xcf", "kra", "clip", "ase", "aseprite",
+        "ttc", "dfont", "pfb", "pfa",
+        "apkg", "anki", "srt", "vtt", "ass", "ssa", "sub", "idx", "sup", "lrc",
+        "gcode", "nc", "step", "stp", "iges", "igs", "dwg", "dxf", "skp", "rvt", "ifc"
     )
 
     /** 主入口：依次尝试 响应头 -> URL -> Content-Type */

@@ -62,8 +62,18 @@ object QuarkParser {
         
         while (hasMore) {
             val detailApi = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken&pdir_fid=$pdirFid&force=0&_page=$page&_size=50"
-            val detailReq = Request.Builder().url(detailApi).header("Cookie", cookie).build()
+            val detailReq = Request.Builder().url(detailApi)
+                .header("Cookie", cookie)
+                .header("Referer", "https://pan.quark.cn/")
+                .header("Origin", "https://pan.quark.cn")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
+                .header("Accept", "application/json, text/plain, */*")
+                .build()
             val detailJson = JSONObject(client.newCall(detailReq).execute().body?.string() ?: "")
+            if (detailJson.optInt("code", 0) != 0 && detailJson.optJSONObject("data") == null) {
+                val msg = detailJson.optString("message")
+                error("读取分享目录失败（${detailJson.optInt("code")}）：$msg")
+            }
             val dataObj = detailJson.optJSONObject("data")
                 ?: run {
                     val msg = detailJson.optString("message")
@@ -94,7 +104,9 @@ object QuarkParser {
                         val dlBody = """{"fids":["$fid"],"pwd_id":"$shareId","stoken":"$stoken"}"""
                         val dlReq = Request.Builder().url(api)
                             .post(dlBody.toRequestBody("application/json".toMediaType()))
-                            .header("Cookie", cookie).header("Referer", "https://pan.quark.cn/").build()
+                            .header("Cookie", cookie).header("Referer", "https://pan.quark.cn/")
+                            .header("Origin", "https://pan.quark.cn").header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
+                            .build()
                         val txt = runCatching { client.newCall(dlReq).execute().use { it.body?.string() ?: "" } }.getOrDefault("")
                         val json = runCatching { JSONObject(txt) }.getOrNull()
                         dlUrl = json?.optJSONArray("data")?.let { arr ->

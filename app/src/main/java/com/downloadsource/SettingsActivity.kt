@@ -291,6 +291,16 @@ fun SettingsScreen(onClose: () -> Unit) {
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
             }
             
+            SettingsGroup {
+                SettingsRow("免责声明", "使用条款与版权说明", Icons.Default.Info) {
+                    android.app.AlertDialog.Builder(ctx)
+                        .setTitle("免责声明")
+                        .setMessage(com.downloadsource.storage.DisclaimerStore.TEXT)
+                        .setPositiveButton("知道了", null)
+                        .show()
+                }
+            }
+
             // 版本信息（放页面最底部，不进标题）
             Column(
                 Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 28.dp),
