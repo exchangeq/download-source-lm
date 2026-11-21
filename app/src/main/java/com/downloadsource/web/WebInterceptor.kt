@@ -39,7 +39,7 @@ class WebInterceptor {
         (function() {
             if (window.__lmSniffInstalled) return;
             window.__lmSniffInstalled = true;
-            var EXT = /(\.mp4|\.m4v|\.mkv|\.webm|\.mov|\.flv|\.avi|\.wmv|\.ogv|\.3gp|\.m2ts|\.mts|\.vob|\.rmvb|\.rm|\.asf|\.f4v|\.m3u8|\.mpd|\.ts|\.mp3|\.m4a|\.m4b|\.aac|\.flac|\.wav|\.ogg|\.opus|\.wma|\.ape|\.ac3|\.amr|\.mka|\.tta|\.zip|\.rar|\.7z|\.tar|\.gz|\.xz|\.bz2|\.zst|\.lz4|\.cab|\.apk|\.xapk|\.apks|\.apkm|\.ipa|\.pdf|\.epub|\.mobi|\.azw3?|\.docx?|\.xlsx?|\.pptx?|\.csv|\.rtf|\.torrent|\.iso|\.img|\.dmg|\.exe|\.msi|\.deb|\.rpm|\.crx|\.bin)(\?|#|$)/i;
+            var EXT = /(\.mp4|\.m4v|\.mkv|\.webm|\.mov|\.flv|\.avi|\.wmv|\.ogv|\.3gp|\.m2ts|\.mts|\.vob|\.rmvb|\.rm|\.asf|\.f4v|\.mpkg|\.pkg|\.apkm|\.apks|\.xapk|\.wgt|\.msix|\.dmg|\.deb|\.rpm|\.iso|\.img|\.torrent|\.zst|\.lz4|\.azw3?|\.mobi|\.epub|\.djvu|\.chm|\.srt|\.ass|\.vtt|\.m3u8|\.mpd|\.ts|\.mp3|\.m4a|\.m4b|\.aac|\.flac|\.wav|\.ogg|\.opus|\.wma|\.ape|\.ac3|\.amr|\.mka|\.tta|\.zip|\.rar|\.7z|\.tar|\.gz|\.xz|\.bz2|\.zst|\.lz4|\.cab|\.apk|\.xapk|\.apks|\.apkm|\.ipa|\.pdf|\.epub|\.mobi|\.azw3?|\.docx?|\.xlsx?|\.pptx?|\.csv|\.rtf|\.torrent|\.iso|\.img|\.dmg|\.exe|\.msi|\.deb|\.rpm|\.crx|\.bin)(\?|#|$)/i;
             var seen = {};
             function report(u, mime) {
                 if (!u || typeof u !== 'string') return;

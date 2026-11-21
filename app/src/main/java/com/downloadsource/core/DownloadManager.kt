@@ -105,6 +105,14 @@ object DownloadManager {
                         _tasks.update { it + newTasks }
                         TaskStore.save(context, _tasks.value)
                         for (newTask in newTasks) { startTask(context, newTask.id) }
+                        withContext(Dispatchers.Main) {
+                            android.widget.Toast.makeText(
+                                context,
+                                if (newTasks.isEmpty()) "分享里没有可解析的文件（需要先在浏览器登录网盘）"
+                                else "已加入 ${newTasks.size} 个文件到下载队列",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                     return@launch
                 }
@@ -221,15 +229,42 @@ object DownloadManager {
         }
     }
 
+    // 扩展名分类表：覆盖 150+ 常见容器/封装，未知扩展名一律原样保留，不会被改名成 .bin
+    private val VIDEO_EXTS = setOf(
+        "mp4", "mkv", "avi", "mov", "ts", "m2ts", "mts", "webm", "flv", "f4v", "m4v", "wmv", "ogv", "ogm",
+        "rmvb", "rm", "3gp", "3g2", "vob", "asf", "m3u8", "mpd", "m4s", "divx", "xvid", "dv", "mxf", "wtv", "nut"
+    )
+    private val AUDIO_EXTS = setOf(
+        "mp3", "flac", "wav", "aac", "m4a", "m4b", "ogg", "opus", "wma", "ape", "aiff", "aif", "ac3", "amr",
+        "mka", "tta", "dts", "mid", "midi", "ra", "au", "caf", "wv", "spx"
+    )
+    private val PACKAGE_EXTS = setOf(
+        "apk", "apks", "xapk", "apkm", "aab", "ipa", "exe", "msi", "msix", "dmg", "pkg", "mpkg", "deb", "rpm",
+        "iso", "img", "vhd", "vhdx", "appimage", "crx", "xpi", "wgt", "jar", "sis", "sisx", "cab", "air"
+    )
+    private val IMAGE_EXTS = setOf(
+        "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "avif", "tif", "tiff", "ico", "psd",
+        "raw", "cr2", "nef", "dng", "jxl"
+    )
+    private val DOC_EXTS = setOf(
+        "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "epub", "mobi", "azw3", "azw",
+        "json", "xml", "html", "htm", "rtf", "odt", "ods", "odp", "pages", "numbers", "key", "djvu", "chm",
+        "tex", "srt", "ass", "vtt", "lrc"
+    )
+    private val ARCHIVE_EXTS = setOf(
+        "zip", "rar", "7z", "tar", "gz", "tgz", "xz", "bz2", "tbz2", "zst", "lz4", "lzma", "z", "arj", "lzh",
+        "ace", "torrent", "par2", "001"
+    )
+
     private fun createCategoryDir(baseDir: File, fileName: String): File {
         val ext = fileName.substringAfterLast('.', "").lowercase()
         val sub = when (ext) {
-            "mp4", "mkv", "avi", "mov", "ts", "webm", "flv", "m4v", "wmv", "ogv", "rmvb", "3gp", "m3u8", "mpd" -> "视频"
-            "mp3", "flac", "wav", "aac", "m4a", "ogg", "opus", "wma", "ape", "aiff" -> "音频"
-            "apk", "xapk", "apks", "aab", "exe", "ipa", "msi", "dmg", "iso" -> "安装包"
-            "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic" -> "图片"
-            "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "epub", "mobi", "json", "xml" -> "文档"
-            "zip", "rar", "7z", "tar", "gz", "xz", "bz2", "zst", "cab", "torrent" -> "压缩包"
+            in VIDEO_EXTS -> "视频"
+            in AUDIO_EXTS -> "音频"
+            in PACKAGE_EXTS -> "安装包"
+            in IMAGE_EXTS -> "图片"
+            in DOC_EXTS -> "文档"
+            in ARCHIVE_EXTS -> "压缩包"
             else -> "其他"
         }
         return File(baseDir, sub).apply { if (!exists()) mkdirs() }

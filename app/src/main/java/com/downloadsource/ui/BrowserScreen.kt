@@ -366,7 +366,7 @@ fun BrowserScreen(
                     )
                 }
                 val ext = url.substringAfterLast('.', "").lowercase().substringBefore('?')
-                if (ext in listOf("mp4", "mp3", "m4a", "aac", "flac", "wav", "m3u8", "webm", "flv", "mov", "mkv", "ts", "apk", "zip", "rar", "7z", "pdf") && !url.contains("favicon")) {
+                if (ext in setOf("mp4", "mkv", "avi", "mov", "ts", "m2ts", "webm", "flv", "m4v", "wmv", "rmvb", "3gp", "m3u8", "mpd", "m4s", "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "ape", "mka", "apk", "apks", "xapk", "apkm", "ipa", "exe", "msi", "dmg", "deb", "rpm", "zip", "rar", "7z", "tar", "gz", "xz", "zst", "iso", "img", "pdf", "epub", "mobi", "azw3", "docx", "xlsx", "pptx", "torrent") && !url.contains("favicon")) {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         if (sniffedUrls.none { it.url == url } && sniffedUrls.size < 100) {
                             sniffedUrls.add(WebInterceptor.SniffedMedia(url, null, false))
@@ -563,9 +563,18 @@ fun BrowserScreen(
     }
 
     fun switchTo(tab: BrowserTab) {
-        if (tab.id == activeId) return
-        snapshotCurrent()
-        activeId = tab.id
+        val real = tab.url.isNotBlank() && !tab.url.startsWith("about:")
+        if (tab.id != activeId) {
+            snapshotCurrent()
+            activeId = tab.id
+        }
+        if (real) {
+            blankPage = false
+            urlInput = tab.url
+            webView.loadUrl(tab.url)
+        } else {
+            blankPage = true
+        }
     }
 
     LaunchedEffect(activeId) {
@@ -701,7 +710,8 @@ fun BrowserScreen(
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
-                if (blankPage) {
+                val tabBlank = currentTab()?.url?.let { it.isBlank() || it.startsWith("about:") } ?: true
+                if (blankPage && tabBlank) {
                     BrowserStartPage(
                         palette = palette,
                         incognito = incognito,
@@ -709,10 +719,22 @@ fun BrowserScreen(
                         onQueryChange = { urlInput = it },
                         onSearch = {
                             val target = SearchEngine.normalize(ctx, urlInput)
-                            if (target.isNotBlank()) { blankPage = false; urlInput = target; webView.loadUrl(target) }
+                            if (target.isNotBlank()) {
+                                blankPage = false
+                                urlInput = target
+                                syncTab(target)
+                                webView.loadUrl(target)
+                            }
                         },
                         onOpen = { link ->
                             blankPage = false
+                            val cur = currentTab()
+                            if (cur != null && (cur.url.isBlank() || cur.url.startsWith("about:"))) {
+                                cur.url = link
+                                urlInput = link
+                                webView.loadUrl(link)
+                                return@BrowserStartPage
+                            }
                             val t = BrowserTab(idGen.getAndIncrement(), "新标签页", link)
                             tabs.add(t); activeId = t.id
                             webView.loadUrl(link)
