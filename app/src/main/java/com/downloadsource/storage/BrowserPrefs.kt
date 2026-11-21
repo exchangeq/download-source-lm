@@ -58,6 +58,34 @@ object BrowserPrefs {
     fun isWebDark(ctx: Context): Boolean = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean("web_dark", false)
     fun setWebDark(ctx: Context, value: Boolean) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("web_dark", value).apply() }
 
+    /** 深色豁免站点：这些站点页面本身就是深色/反转后更糟，永久跳过网页深色 */
+    fun darkExemptHosts(ctx: Context): MutableSet<String> {
+        val raw = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getStringSet("dark_exempt", emptySet()) ?: emptySet()
+        return raw.toMutableSet()
+    }
+
+    fun isDarkExempt(ctx: Context, host: String): Boolean =
+        host.isNotBlank() && darkExemptHosts(ctx).contains(host.lowercase())
+
+    fun addDarkExempt(ctx: Context, host: String) {
+        if (host.isBlank()) return
+        val set = darkExemptHosts(ctx)
+        if (set.add(host.lowercase())) {
+            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putStringSet("dark_exempt", set).apply()
+        }
+    }
+
+    fun removeDarkExempt(ctx: Context, host: String) {
+        val set = darkExemptHosts(ctx)
+        if (set.remove(host.lowercase())) {
+            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putStringSet("dark_exempt", set).apply()
+        }
+    }
+
+    fun clearDarkExempt(ctx: Context) {
+        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putStringSet("dark_exempt", emptySet()).apply()
+    }
+
     /** 无痕浏览：不记历史、不持久化标签页 */
     fun isIncognito(ctx: Context): Boolean = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean("incognito", false)
     fun setIncognito(ctx: Context, value: Boolean) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("incognito", value).apply() }

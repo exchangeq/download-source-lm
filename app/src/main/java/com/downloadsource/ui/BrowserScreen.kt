@@ -171,7 +171,7 @@ fun BrowserScreen(
     var siteScriptText by remember { mutableStateOf("") }
     var showDataPanel by remember { mutableStateOf(false) }
     var readerMode by remember { mutableStateOf(false) }
-    var forceDarkWeb by remember { mutableStateOf(false) }
+    var forceDarkWeb by remember { mutableStateOf(BrowserPrefs.isWebDark(ctx)) }
     var incognito by remember { mutableStateOf(BrowserPrefs.isIncognito(ctx)) }
     var rebuildTick by remember { mutableStateOf(0) }
     var fullscreen by remember { mutableStateOf(false) }
@@ -251,9 +251,10 @@ fun BrowserScreen(
             settings.allowContentAccess = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.setSupportZoom(true)
-            // 默认不改写网页配色：强深色会把部分站点（如百度）整页刷黑
+            // 系统 forceDark 一律关闭：它会把已有深色主题的站点二次反色，整页黑成一块、文字全不可见。
+            // 深色改由 WebScripts.darkMode 的 JS 注入实现（先测背景亮度，深色页面直接跳过）。
             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                settings.forceDark = if (BrowserPrefs.isWebDark(ctx)) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_OFF
+                settings.forceDark = WebSettings.FORCE_DARK_OFF
             }
             // 视口与白底：未加载完时也是白页而不是黑块
             settings.useWideViewPort = true
@@ -290,6 +291,13 @@ fun BrowserScreen(
 
     DisposableEffect(rebuildTick) {
         webView.addJavascriptInterface(webInterceptor, "AndroidBridge")
+        webInterceptor.onDarkFailed = { host ->
+            if (host.isNotBlank()) {
+                BrowserPrefs.addDarkExempt(ctx, host)
+                webView.evaluateJavascript(com.downloadsource.web.WebScripts.darkMode(false), null)
+                android.widget.Toast.makeText(ctx, "该站点已退出深色（已加入豁免列表）", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
         webView.webViewClient = object : SafeWebViewClient(
             onDownloadRequest = { url -> pendingDownloadUrl = url; showDownloadDialog = true },
             onPlayM3u8 = { url -> onPlayStream(url) }
@@ -357,6 +365,10 @@ fun BrowserScreen(
                 if (siteJs.isNotBlank()) view?.evaluateJavascript("(function(){try{$siteJs}catch(e){console.warn('LM site script',e)}})();", null)
                 if (readerMode) view?.evaluateJavascript(WebScripts.readerMode, null)
                 view?.evaluateJavascript(com.downloadsource.web.WebScripts.ensureViewport, null)
+                // 深色在每次加载完成后重新注入（站点豁免则跳过）
+                val darkHost = SiteScriptStore.hostOf(url ?: "")
+                val darkOn = BrowserPrefs.isWebDark(ctx) && !BrowserPrefs.isDarkExempt(ctx, darkHost)
+                view?.evaluateJavascript(com.downloadsource.web.WebScripts.darkMode(darkOn), null)
                 // 站点级缩放记忆：回到同一站点自动套用上次的缩放
                 if (url != null && url.startsWith("http")) {
                     val saved = BrowserPrefs.getHostZoom(ctx, SiteScriptStore.hostOf(url))
@@ -1730,10 +1742,27 @@ fun BrowserScreen(
                         Text("网页强制深色", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                         Switch(checked = forceDarkWeb, onCheckedChange = {
                             forceDarkWeb = it
-                            webView.settings.forceDark = if (it) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_OFF
-                            webView.reload()
+                            BrowserPrefs.setWebDark(ctx, it)
+                            webView.settings.forceDark = WebSettings.FORCE_DARK_OFF
+                            val h = SiteScriptStore.hostOf(webView.url ?: "")
+                            if (it) BrowserPrefs.removeDarkExempt(ctx, h)
+                            webView.evaluateJavascript(
+                                com.downloadsource.web.WebScripts.darkMode(it && !BrowserPrefs.isDarkExempt(ctx, h)),
+                                null
+                            )
                         })
                     }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val host = SiteScriptStore.hostOf(webView.url ?: "")
+                    Text("本站点不启用深色（${if (host.isBlank()) "当前页面" else host}）", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = BrowserPrefs.isDarkExempt(ctx, host), onCheckedChange = {
+                        if (it) BrowserPrefs.addDarkExempt(ctx, host) else BrowserPrefs.removeDarkExempt(ctx, host)
+                        webView.evaluateJavascript(
+                            com.downloadsource.web.WebScripts.darkMode(forceDarkWeb && !BrowserPrefs.isDarkExempt(ctx, host)),
+                            null
+                        )
+                    })
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("无图模式（省流量）", color = palette.onSurface, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)

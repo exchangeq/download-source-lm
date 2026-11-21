@@ -5,6 +5,16 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
 class WebInterceptor {
+    /** 深色注入自检失败回调（页面被反色反成空壳），由原生层把该站点加入豁免 */
+    var onDarkFailed: ((String) -> Unit)? = null
+
+    @JavascriptInterface
+    fun onDarkFailed(host: String?) {
+        val h = host ?: return
+        if (h.isBlank()) return
+        android.os.Handler(android.os.Looper.getMainLooper()).post { runCatching { onDarkFailed?.invoke(h) } }
+    }
+
     data class SniffedMedia(val url: String, val mime: String?, val isBlob: Boolean)
 
     private val _sniffedData = MutableSharedFlow<SniffedMedia>()

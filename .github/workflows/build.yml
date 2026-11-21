@@ -47,15 +47,15 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          VERSION_NAME: '10.0-kappa1.12'
+          VERSION_NAME: '10.0-kappa1.13'
         run: gradle :app:assembleOmegaRelease :app:assembleZetaRelease --no-daemon --stacktrace
 
       - name: Collect APK
         run: |
           mkdir -p out
           find app/build/outputs/apk -name '*.apk' -exec cp {} out/ \;
-          if [ -f out/app-omega-release.apk ]; then cp out/app-omega-release.apk "out/LM-Ultra-Fast-Downloader-10.0-kappa1.12.apk"; fi
-          if [ -f out/app-zeta-release.apk ]; then cp out/app-zeta-release.apk "out/LM-Ultra-Fast-Downloader-10.0-kappa1.12-Beta.apk"; fi
+          if [ -f out/app-omega-release.apk ]; then cp out/app-omega-release.apk "out/LM-Ultra-Fast-Downloader-10.0-kappa1.13.apk"; fi
+          if [ -f out/app-zeta-release.apk ]; then cp out/app-zeta-release.apk "out/LM-Ultra-Fast-Downloader-10.0-kappa1.13-Beta.apk"; fi
           ls -l out
 
       - uses: actions/upload-artifact@v4
@@ -66,7 +66,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v10.0-kappa1.12-lm
-          name: LM Ultra Fast Downloader v10.0-kappa1.12
+          tag_name: v10.0-kappa1.13-lm
+          name: LM Ultra Fast Downloader v10.0-kappa1.13
           body_path: CHANGELOG.md
           files: out/*.apk
