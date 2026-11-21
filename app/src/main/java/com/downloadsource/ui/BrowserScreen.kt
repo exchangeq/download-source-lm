@@ -221,7 +221,8 @@ fun BrowserScreen(
             settings.loadsImagesAutomatically = BrowserPrefs.isImagesEnabled(ctx)
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx))
-            settings.textZoom = BrowserPrefs.getZoom(ctx)
+            settings.textZoom = BrowserPrefs.getZoom(ctx).coerceIn(85, 130)
+            settings.blockNetworkImage = false
             settings.setSupportZoom(true)
             settings.builtInZoomControls = true
             settings.displayZoomControls = false
@@ -338,6 +339,7 @@ fun BrowserScreen(
                 val siteJs = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
                 if (siteJs.isNotBlank()) view?.evaluateJavascript("(function(){try{$siteJs}catch(e){console.warn('LM site script',e)}})();", null)
                 if (readerMode) view?.evaluateJavascript(WebScripts.readerMode, null)
+                view?.evaluateJavascript(com.downloadsource.web.WebScripts.ensureViewport, null)
                 // 白屏看门狗：页面「加载完成」但正文为空（站点脚本报错/被规则挡住/渲染进程异常）
                 if (!url.isNullOrBlank() && url.startsWith("http")) {
                     view?.evaluateJavascript(
@@ -604,23 +606,16 @@ fun BrowserScreen(
         runCatching {
             val st = webView.settings
             st.userAgentString = ua
-            if (desktop) {
-                // 桌面 UA 配 wideViewport 会让页面宽度锁死在 980px，手势被横向滚动吃掉 → 表现为「划不动」
-                st.useWideViewPort = false
-                st.loadWithOverviewMode = true
-                st.setSupportZoom(true)
-                st.builtInZoomControls = true
-                st.displayZoomControls = false
-                st.textZoom = 100
-                webView.setInitialScale(0)
-            } else {
-                st.useWideViewPort = true
-                st.loadWithOverviewMode = true
-                st.setSupportZoom(true)
-                st.builtInZoomControls = true
-                st.displayZoomControls = false
-                webView.setInitialScale(0)
-            }
+            // 两种模式都要开 wideViewport + overview：桌面版页面 980px 才会被整体缩放进屏幕，
+            // 关掉就会横向裁切（表现为「文字只剩左半截」）
+            st.useWideViewPort = true
+            st.loadWithOverviewMode = true
+            st.setSupportZoom(true)
+            st.builtInZoomControls = true
+            st.displayZoomControls = false
+            st.textZoom = if (desktop) 100 else BrowserPrefs.getZoom(ctx).coerceIn(85, 130)
+            st.blockNetworkImage = false
+            webView.setInitialScale(0)
             // 不再手动切 LAYER_TYPE_HARDWARE，软硬切换本身就会引起首屏抖动
             webView.isNestedScrollingEnabled = true
             webView.requestDisallowInterceptTouchEvent(false)
@@ -1037,7 +1032,7 @@ fun BrowserScreen(
                                     color = if (zoom == z) palette.primary.first() else palette.onSurfaceDim,
                                     fontWeight = if (zoom == z) FontWeight.Bold else FontWeight.Normal,
                                     modifier = Modifier.clickable {
-                                        zoom = z; BrowserPrefs.setZoom(ctx, z); webView.settings.textZoom = z
+                                        zoom = z; BrowserPrefs.setZoom(ctx, z); webView.settings.textZoom = z.coerceIn(85, 130)
                                     }.padding(horizontal = 6.dp)
                                 )
                             }

@@ -32,7 +32,11 @@ object PyRuleEngine {
     fun shouldBlock(url: String): Boolean {
         val lower = url.lowercase()
         // 白名单先判：这些 CDN 上既有图片也有广告脚本，宁可少拦也别把页面搞崩
-        if (safeHostKeywords.any { lower.contains(it) && lower.containsAnyImageExt() }) return false
+        // 图片/字体/样式/脚本资源一律放行：误拦会让整页出现破图、排版错乱
+        if (lower.containsAnyImageExt() || lower.endsWith(".css") || lower.contains(".css?") ||
+            lower.endsWith(".js") || lower.contains(".js?") || lower.endsWith(".woff2") || lower.contains(".woff")
+        ) return false
+        if (safeHostKeywords.any { lower.contains(it) }) return false
         return adPatterns.any { runCatching { it.matcher(lower).matches() }.getOrDefault(false) }
     }
 
