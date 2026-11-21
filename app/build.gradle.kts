@@ -11,7 +11,7 @@ plugins {
 val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
 val localVersionCode = (System.currentTimeMillis() / 60000).toInt()
 val injectedVersionCode = ciRunNumber ?: localVersionCode
-val injectedVersionName = System.getenv("VERSION_NAME") ?: "10.0.0-1.0kappa"
+val injectedVersionName = System.getenv("VERSION_NAME") ?: "10.0-kappa1.0"
 val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
 
 android {

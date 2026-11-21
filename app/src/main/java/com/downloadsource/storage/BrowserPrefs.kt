@@ -44,4 +44,8 @@ object BrowserPrefs {
     /** 网页强制深色：白天护眼/夜间阅读（默认关，避免整页刷黑） */
     fun isWebDark(ctx: Context): Boolean = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean("web_dark", false)
     fun setWebDark(ctx: Context, value: Boolean) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("web_dark", value).apply() }
+
+    /** 无痕浏览：不记历史、不持久化标签页 */
+    fun isIncognito(ctx: Context): Boolean = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean("incognito", false)
+    fun setIncognito(ctx: Context, value: Boolean) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("incognito", value).apply() }
 }

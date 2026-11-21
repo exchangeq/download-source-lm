@@ -190,6 +190,8 @@ fun BrowserScreen(
     val uiStyle = remember { BrowserPrefs.getUiStyle(ctx) }
     var blockBaidu by remember { mutableStateOf(BrowserPrefs.blockBaidu(ctx)) }
     var adBlockOn by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.isEnabled(ctx)) }
+    var incognito by remember { mutableStateOf(BrowserPrefs.isIncognito(ctx)) }
+    var blankPage by remember { mutableStateOf(true) }
     var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
     var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
@@ -275,6 +277,7 @@ fun BrowserScreen(
         ) {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                blankPage = url.isNullOrBlank() || url.startsWith("about:")
                 pageLoading = true
                 pageError = null
                 if (url != null && blockBaidu) {
@@ -300,7 +303,7 @@ fun BrowserScreen(
                     syncTab(url)
                     lastHost = SiteScriptStore.hostOf(url)
                     if (!addressFocused) urlInput = url
-                    BrowserHistoryStore.addHistory(ctx, url)
+                    if (!incognito && !url.startsWith("about:")) BrowserHistoryStore.addHistory(ctx, url)
                 }
                 view?.evaluateJavascript(webInterceptor.injectionScript, null)
                 val sy = currentTab()?.scrollY ?: 0
@@ -501,6 +504,7 @@ fun BrowserScreen(
     }
 
     LaunchedEffect(Unit) {
+        if (incognito) return@LaunchedEffect
         snapshotFlow { tabs.map { Quad(it.id, it.title, it.url, it.scrollY) } to activeId }
             .collect { (list, act) ->
                 com.downloadsource.storage.TabStore.save(
@@ -680,6 +684,25 @@ fun BrowserScreen(
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
+                if (blankPage) {
+                    BrowserStartPage(
+                        palette = palette,
+                        incognito = incognito,
+                        query = urlInput,
+                        onQueryChange = { urlInput = it },
+                        onSearch = {
+                            val target = SearchEngine.normalize(ctx, urlInput)
+                            if (target.isNotBlank()) { blankPage = false; urlInput = target; webView.loadUrl(target) }
+                        },
+                        onOpen = { link ->
+                            blankPage = false
+                            val t = BrowserTab(idGen.getAndIncrement(), "新标签页", link)
+                            tabs.add(t); activeId = t.id
+                            webView.loadUrl(link)
+                        },
+                        onEngines = { showEnginePicker = true }
+                    )
+                }
                 pageError?.let { err ->
                     Column(
                         Modifier.align(Alignment.Center).padding(24.dp)
@@ -831,6 +854,19 @@ fun BrowserScreen(
                         }
                     }
                     item { HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f)) }
+                    item {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("无痕浏览", color = palette.onSurface)
+                                Text("不记历史、不保存标签页", color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Switch(checked = incognito, onCheckedChange = {
+                                incognito = it
+                                BrowserPrefs.setIncognito(ctx, it)
+                                android.widget.Toast.makeText(ctx, if (it) "已开启无痕浏览" else "已关闭无痕浏览", android.widget.Toast.LENGTH_SHORT).show()
+                            })
+                        }
+                    }
                     item {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("拦截跳转百度", color = palette.onSurface, modifier = Modifier.weight(1f))
@@ -1445,5 +1481,114 @@ private fun qualityScore(url: String): Int {
         u.contains("720") || u.contains("hd") -> 2
         u.contains("540") || u.contains("480") -> 1
         else -> 0
+    }
+}
+
+
+/** 新标签起始页：大搜索框 + 常用站点网格，空白页不再是纯白 */
+@Composable
+private fun BrowserStartPage(
+    palette: GradientPalette,
+    incognito: Boolean,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onOpen: (String) -> Unit,
+    onEngines: () -> Unit
+) {
+    val sites = listOf(
+        "百度" to "https://www.baidu.com",
+        "B站" to "https://m.bilibili.com",
+        "知乎" to "https://www.zhihu.com",
+        "微博" to "https://m.weibo.cn",
+        "抖音" to "https://www.douyin.com",
+        "淘宝" to "https://m.taobao.com",
+        "GitHub" to "https://github.com",
+        "YouTube" to "https://m.youtube.com"
+    )
+    Column(
+        Modifier.fillMaxSize().background(palette.background.first())
+            .padding(horizontal = 22.dp).padding(top = 60.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            if (incognito) "无痕浏览" else "LM Browser",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.ExtraBold, color = palette.onSurface
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (incognito) "本次浏览不留痕迹" else "输入网址，或先选一个站点",
+            color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(Modifier.height(18.dp))
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(palette.surface)
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Search, null, tint = palette.onSurfaceDim, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = TextStyle(color = palette.onSurface, fontSize = MaterialTheme.typography.bodyLarge.fontSize),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(palette.primary.first()),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                ),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch() }),
+                decorationBox = { inner ->
+                    Box {
+                        if (query.isEmpty()) Text("搜索或输入网址", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodyMedium)
+                        inner()
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            )
+            if (query.isNotEmpty()) {
+                Icon(
+                    Icons.Default.Send, "前往", tint = palette.primary.first(),
+                    modifier = Modifier.size(20.dp).clickable { onSearch() }
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "常用站点", color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
+        androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+            columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(4),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            gridItems(sites, key = { it.first }) { (name, url) ->
+                Column(
+                    Modifier.fillMaxWidth().height(78.dp).clip(RoundedCornerShape(16.dp))
+                        .background(palette.surface).clickable { onOpen(url) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
+                            .background(palette.primary.first().copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            name.take(1), color = palette.primary.first(),
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(name, color = palette.onSurface, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        TextButton(onClick = onEngines) { Text("切换搜索引擎") }
     }
 }
