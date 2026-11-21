@@ -366,6 +366,16 @@ object DownloadManager {
                 updateTaskState(context, id) { it.copy(status = TaskStatus.Completed, fileName = finalOut.name, downloadedBytes = maxOf(it.totalBytes, finalOut.length()), totalBytes = maxOf(it.totalBytes, finalOut.length()), speed = 0, outputPath = finalOut.absolutePath) }
 
                 if (out.name.endsWith(".apk", true)) {
+                    // 版本更新包：装之前先核对包名，防止下到别的应用的包
+                    if (out.name.startsWith("Update_")) {
+                        val pkg = runCatching {
+                            context.packageManager.getPackageArchiveInfo(out.absolutePath, 0)?.packageName
+                        }.getOrNull()
+                        if (pkg != null && pkg != context.packageName) {
+                            updateTaskState(context, id) { it.copy(status = TaskStatus.Failed, error = "安装包包名不匹配（$pkg）") }
+                            return@launch
+                        }
+                    }
                     try {
                         val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", out)
                         context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW).apply { setDataAndType(uri, "application/vnd.android.package-archive"); addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK) })

@@ -14,6 +14,17 @@ object WebScripts {
                     m.content = 'width=device-width, initial-scale=1.0';
                     document.head.appendChild(m);
                 }
+                // 小功能①：双击页面空白处回到顶部（移动端双击不缩放，随手一按就能回顶）
+                if (!window.__lmDblClickTop) {
+                    window.__lmDblClickTop = true;
+                    document.addEventListener('dblclick', function(ev){
+                        try {
+                            var t = ev.target;
+                            if (t && /^(A|BUTTON|INPUT|TEXTAREA|VIDEO|SELECT)$/.test(t.tagName)) return;
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                        } catch (e) {}
+                    }, true);
+                }
             } catch (e) {}
         })();
     """.trimIndent()

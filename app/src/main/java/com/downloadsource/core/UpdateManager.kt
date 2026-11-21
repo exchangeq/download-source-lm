@@ -49,20 +49,44 @@ object UpdateManager {
     }
 
     suspend fun checkUpdate(rawCurrentVersion: String): ReleaseInfo? = withContext(Dispatchers.IO) {
+        // 列表接口被限流时退到 latest，避免「检测没反应」
+        runCatching { fetchReleases() }.getOrNull()?.let { list ->
+            pick(list, rawCurrentVersion)?.let { return@withContext it }
+        }
+        runCatching { fetchLatest() }.getOrNull()?.let { arr ->
+            pick(arr, rawCurrentVersion)?.let { return@withContext it }
+        }
+        return@withContext null
+    }
+
+    private fun fetchReleases(): List<com.google.gson.JsonObject>? {
+        val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases?per_page=100")
+            .header("User-Agent", "LM-Downloader").build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            return JsonParser.parseString(resp.body?.string()).asJsonArray.map { it.asJsonObject }
+        }
+    }
+
+    private fun fetchLatest(): List<com.google.gson.JsonObject>? {
+        val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases/latest")
+            .header("User-Agent", "LM-Downloader").build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            return listOf(JsonParser.parseString(resp.body?.string()).asJsonObject)
+        }
+    }
+
+    private fun pick(els: List<com.google.gson.JsonObject>, rawCurrentVersion: String): ReleaseInfo? {
         try {
             val currentVersion = rawCurrentVersion.trim()
-            val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases?per_page=100")
-                .header("User-Agent", "LM-Downloader").build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val jsonArray = JsonParser.parseString(resp.body?.string()).asJsonArray
+            run {
                 // 通道识别按 applicationId 判断，比看资产名字更可靠
                 val isBeta = BuildConfig.APPLICATION_ID.endsWith(".beta") || BuildConfig.CHANNEL == "zeta"
                 var best: ReleaseInfo? = null
                 var bestVer: String? = null
 
-                for (element in jsonArray) {
-                    val json = element.asJsonObject
+                for (json in els) {
                     if (json.get("draft")?.asBoolean == true || json.get("prerelease")?.asBoolean == true) continue
                     val tag = json.get("tag_name")?.asString ?: continue
                     val body = json.get("body")?.asString ?: ""
@@ -87,7 +111,7 @@ object UpdateManager {
                         best = ReleaseInfo(version, apkUrl, body, isBeta)
                     }
                 }
-                return@withContext best
+                return best
             }
         } catch (e: Exception) { null }
     }

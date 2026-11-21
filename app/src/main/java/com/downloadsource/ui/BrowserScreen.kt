@@ -235,6 +235,9 @@ fun BrowserScreen(
             settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx))
             settings.textZoom = BrowserPrefs.getZoom(ctx).coerceIn(85, 130)
             settings.blockNetworkImage = false
+            settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
+            settings.minimumFontSize = 12
+            settings.setMinimumLogicalFontSize(8)
             settings.setSupportZoom(true)
             settings.builtInZoomControls = true
             settings.displayZoomControls = false
@@ -435,8 +438,18 @@ fun BrowserScreen(
             override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame == true) {
+                    val failUrl = request?.url?.toString() ?: ""
                     pageLoading = false
-                    pageError = error?.description?.toString() ?: "未知错误"
+                    // 小功能③：主文档首次失败自动重试一次，弱网/瞬断不用手动点
+                    if (failUrl.startsWith("http") && !autoRetryDone.contains(failUrl)) {
+                        autoRetryDone = autoRetryDone + failUrl
+                        pageError = null
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            runCatching { view?.loadUrl(failUrl) }
+                        }, 900)
+                    } else {
+                        pageError = error?.description?.toString() ?: "未知错误"
+                    }
                 }
             }
 
@@ -1013,6 +1026,18 @@ fun BrowserScreen(
                     } }
                     item { MenuItem("另存网页 HTML", Icons.Default.Add, palette) { showMenu = false; savePageHtml(ctx, webView) } }
                     item { MenuItem("长截图保存", Icons.Default.Layers, palette) { showMenu = false; saveLongScreenshot(ctx, webView, palette) } }
+                    item { MenuItem("分享当前网页", Icons.Default.Share, palette) { showMenu = false
+                        val u = webView.url ?: urlInput
+                        if (u.isNotBlank()) {
+                            runCatching {
+                                ctx.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_SUBJECT, pageTitle)
+                                    putExtra(android.content.Intent.EXTRA_TEXT, (pageTitle.ifBlank { "网页" }) + "\n" + u)
+                                }, "分享到"))
+                            }
+                        }
+                    } }
                     item { MenuItem("导出 PDF", Icons.Default.Refresh, palette) { showMenu = false; exportPdf(ctx, webView) } }
                     item { MenuItem("分享当前页面", Icons.AutoMirrored.Filled.Send, palette) {
                         showMenu = false
@@ -1190,6 +1215,14 @@ fun BrowserScreen(
                         val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
                         tabs.add(tab); activeId = tab.id; showTabs = false
                     }) { Text("新建") }
+                    TextButton(onClick = {
+                        // 小功能④：一键关闭全部标签，保留一个空白页
+                        val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
+                        tabs.clear(); tabs.add(fresh); activeId = fresh.id
+                        urlInput = ""; blankPage = true
+                        runCatching { webView.loadUrl("about:blank") }
+                        showTabs = false
+                    }) { Text("全部关闭") }
                     TextButton(onClick = { showTabs = false }) { Text("完成") }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -1418,6 +1451,7 @@ fun BrowserScreen(
                 launch { probeMap[media.url] = com.downloadsource.core.MediaProbe.probe(media.url) }
             }
         }
+        var sniffFilter by remember { mutableStateOf("全部") }
         Dialog(onDismissRequest = { showSniffList = false }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 500.dp).clip(RoundedCornerShape(16.dp)).background(palette.surface).padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1447,7 +1481,22 @@ fun BrowserScreen(
                         TextButton(onClick = { sniffedUrls.clear(); showSniffList = false }) { Text("清空") }
                     }
                 }
-                val grouped = sniffedUrls.groupBy { sniffKind(it.url) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                    listOf("全部", "视频", "音频", "其它").forEach { f ->
+                        val on = sniffFilter == f
+                        Box(Modifier.clip(RoundedCornerShape(50)).background(if (on) palette.primary.first() else palette.surface.copy(alpha = 0.6f))
+                            .clickable { sniffFilter = f }.padding(horizontal = 12.dp, vertical = 5.dp)) {
+                            Text(f, color = if (on) Color.White else palette.onSurface, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                val groupedAll = sniffedUrls.groupBy { sniffKind(it.url) }
+                val grouped = when (sniffFilter) {
+                    "视频" -> groupedAll.filterKeys { it == "视频" }
+                    "音频" -> groupedAll.filterKeys { it == "音频" }
+                    "其它" -> groupedAll.filterKeys { it !in listOf("视频", "音频") }
+                    else -> groupedAll
+                }
                 val order = listOf("视频", "音频", "安装包", "压缩包", "文档", "图片", "其它")
                 LazyColumn {
                     order.forEach { kind ->
