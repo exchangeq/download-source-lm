@@ -36,4 +36,12 @@ object BrowserPrefs {
 
     fun getUaKey(ctx: Context): String = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString("ua_key", "android") ?: "android"
     fun setUaKey(ctx: Context, key: String) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString("ua_key", key).apply() }
+
+    /** 无图模式：省流量、弱网提速（默认关，加载图片） */
+    fun isImagesEnabled(ctx: Context): Boolean = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean("load_images", true)
+    fun setImagesEnabled(ctx: Context, value: Boolean) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("load_images", value).apply() }
+
+    /** 网页强制深色：白天护眼/夜间阅读（默认关，避免整页刷黑） */
+    fun isWebDark(ctx: Context): Boolean = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean("web_dark", false)
+    fun setWebDark(ctx: Context, value: Boolean) { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean("web_dark", value).apply() }
 }

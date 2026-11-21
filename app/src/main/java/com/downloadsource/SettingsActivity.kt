@@ -43,6 +43,7 @@ import com.downloadsource.core.DownloadManager
 import com.downloadsource.core.LocalWebServer
 import com.downloadsource.core.UpdateManager
 import com.downloadsource.storage.BrowserPrefs
+import com.downloadsource.utils.PyRuleEngine
 import com.downloadsource.utils.SearchEngine
 import com.downloadsource.storage.DirStore
 import com.downloadsource.ui.*
@@ -100,19 +101,17 @@ fun SettingsScreen(onClose: () -> Unit) {
     var showPoem by remember { mutableStateOf(false) }
     var poemText by remember { mutableStateOf("") }
     var showAria2Dialog by remember { mutableStateOf(false) }
+    var loadImages by remember { mutableStateOf(BrowserPrefs.isImagesEnabled(ctx)) }
+    var webDark by remember { mutableStateOf(BrowserPrefs.isWebDark(ctx)) }
+    var adBlock by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.isEnabled(ctx)) }
+    var adBlocked by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
+    var blockBaidu by remember { mutableStateOf(BrowserPrefs.blockBaidu(ctx)) }
 
     Column(Modifier.fillMaxSize()) {
         // 顶栏与彩蛋触发点
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Back", tint = palette.onSurface, modifier = Modifier.rotate(180f)) }
-            Text("设置 (v${BuildConfig.VERSION_NAME})", modifier = Modifier.clickable { 
-                versionClickCount++
-                if (versionClickCount >= 10) { 
-                    poemText = PoemEasterEgg.getRandomPoem()
-                    showPoem = true
-                    versionClickCount = 0 
-                }
-            }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, color = palette.onSurface)
+            Text("设置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, color = palette.onSurface)
         }
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -217,6 +216,29 @@ fun SettingsScreen(onClose: () -> Unit) {
                 }
             }
 
+            // 4.5 浏览器
+            SettingsGroup {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Layers, null, tint = palette.onSurfaceDim, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("浏览器体验", color = palette.onSurface, fontWeight = FontWeight.Medium)
+                }
+                ToggleRow("无图模式", "省流量、弱网更快，重进浏览器生效", loadImages) { loadImages = it; BrowserPrefs.setImagesEnabled(ctx, it) }
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                ToggleRow("网页强制深色", "阅读护眼，部分站点可能显示异常", webDark) { webDark = it; BrowserPrefs.setWebDark(ctx, it) }
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                ToggleRow("网页广告拦截", "已拦 ${adBlocked} 条 · 关闭后完全放行", adBlock) {
+                    adBlock = it
+                    com.downloadsource.storage.AdBlockStore.setEnabled(ctx, it)
+                    if (!it) com.downloadsource.storage.AdBlockStore.resetCount(ctx)
+                    adBlocked = com.downloadsource.storage.AdBlockStore.blockedCount(ctx)
+                }
+                HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
+                ToggleRow("拦截跳转百度", "防止站点强跳 baidu.com", blockBaidu) {
+                    blockBaidu = it; BrowserPrefs.setBlockBaidu(ctx, it)
+                }
+            }
+
             // 5. 工具
             SettingsGroup {
                 SettingsRow("局域网互传", serverIp, Icons.Default.Wifi) {
@@ -269,6 +291,35 @@ fun SettingsScreen(onClose: () -> Unit) {
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
             }
             
+            // 版本信息（放页面最底部，不进标题）
+            Column(
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "LM Ultra Fast Downloader",
+                    color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "v${BuildConfig.VERSION_NAME} · ${BuildConfig.CHANNEL} 内核",
+                    color = palette.onSurface, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable {
+                        versionClickCount++
+                        if (versionClickCount >= 10) {
+                            poemText = PoemEasterEgg.getRandomPoem()
+                            showPoem = true
+                            versionClickCount = 0
+                        }
+                    }
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "下载引擎 64 路并发 · 嗅探规则 ${PyRuleEngine.stats().first} 条 · 广告规则 ${PyRuleEngine.stats().second} 条",
+                    color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -321,5 +372,19 @@ fun SettingsScreen(onClose: () -> Unit) {
         Text(title, color = palette.onSurface, modifier = Modifier.weight(1f))
         Text(subtitle, color = palette.onSurfaceDim, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
         if (onClick != null) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = palette.onSurfaceDim, modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
+@Composable
+private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }

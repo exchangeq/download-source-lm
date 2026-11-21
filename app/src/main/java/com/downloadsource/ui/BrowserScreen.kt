@@ -215,7 +215,7 @@ fun BrowserScreen(
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
-            settings.loadsImagesAutomatically = true
+            settings.loadsImagesAutomatically = BrowserPrefs.isImagesEnabled(ctx)
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx))
             settings.textZoom = BrowserPrefs.getZoom(ctx)
@@ -232,7 +232,7 @@ fun BrowserScreen(
             settings.setSupportZoom(true)
             // 默认不改写网页配色：强深色会把部分站点（如百度）整页刷黑
             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                settings.forceDark = WebSettings.FORCE_DARK_OFF
+                settings.forceDark = if (BrowserPrefs.isWebDark(ctx)) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_OFF
             }
             // 视口与白底：未加载完时也是白页而不是黑块
             settings.useWideViewPort = true
