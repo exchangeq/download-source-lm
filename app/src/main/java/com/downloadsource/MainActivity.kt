@@ -172,7 +172,7 @@ class MainActivity : ComponentActivity() {
                                     text = { Text(updateInfo?.changelog ?: "") }, 
                                     confirmButton = { 
                                         TextButton(onClick = { 
-                                            DownloadManager.add(ctx, updateInfo!!.downloadUrl, "DownloadSource_Update_${updateInfo?.version}.apk", 8, 0, emptyMap(), DirStore.resolveDownloadDir(ctx))
+                                            updateInfo?.let { UpdateManager.downloadAndInstall(ctx, it) }
                                             updateInfo = null 
                                         }) { Text("立即更新") } 
                                     },
