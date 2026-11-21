@@ -89,9 +89,9 @@ AD_BLOCK_PATTERNS = [
     r".*firebase-settings.*",
     r".*adsystem.*",
     r".*adservice.*",
-    r".*\/ads?\/.*",
-    r".*\/advert.*",
-    r".*banner.*\.(gif|jpg|png).*"
+    r".*\/adserver\/.*",
+    r".*\/advertise\/.*",
+    r".*adx\.*"
 ]
 
 def should_block(url):

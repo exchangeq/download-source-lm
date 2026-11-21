@@ -223,7 +223,10 @@ fun SettingsScreen(onClose: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Text("浏览器体验", color = palette.onSurface, fontWeight = FontWeight.Medium)
                 }
-                ToggleRow("无图模式", "省流量、弱网更快，重进浏览器生效", loadImages) { loadImages = it; BrowserPrefs.setImagesEnabled(ctx, it) }
+                ToggleRow("无图模式", "省流量、弱网更快，重进浏览器生效", !loadImages) { noImages ->
+                    loadImages = !noImages
+                    BrowserPrefs.setImagesEnabled(ctx, loadImages)
+                }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))
                 ToggleRow("网页强制深色", "阅读护眼，部分站点可能显示异常", webDark) { webDark = it; BrowserPrefs.setWebDark(ctx, it) }
                 HorizontalDivider(color = palette.onSurface.copy(alpha = 0.1f))

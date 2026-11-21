@@ -23,8 +23,21 @@ object PyRuleEngine {
             reader.close()
         } catch (e: Exception) { }
     }
-    fun shouldBlock(url: String): Boolean =
-        adPatterns.any { runCatching { it.matcher(url).matches() }.getOrDefault(false) }
+    private val safeHostKeywords = listOf(
+        "gss0.baidu.com", "img.baidu.com", "hiphotos.baidu.com", "b.bdstatic.com", "ss.bdstatic.com",
+        "qpic.cn", "sinaimg.cn", "zhimg.com", "alicdn.com", "byteimg.com", "pstatp.com",
+        "xiaohongshu.com", "hdslb.com", "doubanio.com", "googleusercontent", "gstatic.com"
+    )
+
+    fun shouldBlock(url: String): Boolean {
+        val lower = url.lowercase()
+        // 白名单先判：这些 CDN 上既有图片也有广告脚本，宁可少拦也别把页面搞崩
+        if (safeHostKeywords.any { lower.contains(it) && lower.containsAnyImageExt() }) return false
+        return adPatterns.any { runCatching { it.matcher(lower).matches() }.getOrDefault(false) }
+    }
+
+    private fun String.containsAnyImageExt(): Boolean =
+        contains(".jpg") || contains(".jpeg") || contains(".png") || contains(".gif") || contains(".webp") || contains(".svg")
 
     fun shouldSniff(url: String): Boolean =
         mediaPatterns.any { runCatching { it.matcher(url).matches() }.getOrDefault(false) }

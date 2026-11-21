@@ -174,7 +174,7 @@ fun BrowserScreen(
     var incognito by remember { mutableStateOf(BrowserPrefs.isIncognito(ctx)) }
     var rebuildTick by remember { mutableStateOf(0) }
     var fullscreen by remember { mutableStateOf(false) }
-    var imagesOn by remember { mutableStateOf(true) }
+    var imagesOn by remember { mutableStateOf(BrowserPrefs.isImagesEnabled(ctx)) }
     var thirdPartyCookies by remember { mutableStateOf(true) }
 
     var engine by remember { mutableStateOf(SearchEngine.getCurrent(ctx)) }
