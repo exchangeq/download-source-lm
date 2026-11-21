@@ -42,8 +42,28 @@ object QuarkParser {
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
             .build()
         val tokenJson = JSONObject(client.newCall(tokenReq).execute().body?.string() ?: "")
-        val stoken = tokenJson.optJSONObject("data")?.optString("stoken")?.takeIf { it.isNotBlank() }
-            ?: run {
+        // 第一次失败：换一份最新的浏览器 Cookie 再试一次（旧 Cookie 过期是解析率低的主因）
+        var stoken = tokenJson.optJSONObject("data")?.optString("stoken")?.takeIf { it.isNotBlank() }
+        if (stoken == null) {
+            val fresh = runCatching {
+                android.webkit.CookieManager.getInstance().getCookie("https://pan.quark.cn")
+            }.getOrNull()
+            if (!fresh.isNullOrBlank() && fresh != cookie) {
+                CookieStore.save(ctx, "quark", fresh)
+                val retryReq = Request.Builder().url(tokenApi).post(tokenBody.toRequestBody("application/json".toMediaType()))
+                    .header("Cookie", fresh).header("Referer", "https://pan.quark.cn/").header("Origin", "https://pan.quark.cn")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
+                    .build()
+                val retryJson = JSONObject(client.newCall(retryReq).execute().body?.string() ?: "")
+                stoken = retryJson.optJSONObject("data")?.optString("stoken")?.takeIf { it.isNotBlank() }
+                if (stoken != null) {
+                    val res = mutableListOf<DiskParser.FileInfo>()
+                    fetchFolderWithPagination(fresh, shareId, stoken, "0", 1, res)
+                    return@withContext res
+                }
+            }
+        }
+        val failure = stoken ?: run {
                 val msg = tokenJson.optString("message")
                 if (msg.contains("密码") || msg.contains("passcode", true) || tokenJson.optInt("code") == 41008)
                     error("这个分享需要提取码，请在链接后补 ?pwd=xxxx 再试")
@@ -52,7 +72,7 @@ object QuarkParser {
 
         val results = mutableListOf<DiskParser.FileInfo>()
         // 开启分页拉取，每次拉 50 个
-        fetchFolderWithPagination(cookie, shareId, stoken, "0", 1, results)
+        fetchFolderWithPagination(cookie, shareId, failure, "0", 1, results)
         results
     }
 

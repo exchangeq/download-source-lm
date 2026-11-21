@@ -557,20 +557,33 @@ fun BrowserScreen(
     /** 切走前存快照：滚动位置 + 当前画面缩略图 */
     /** 切换 UA：统一处理 viewport / 缩放 / 渲染层，避免桌面模式划不动、换 UA 后卡顿 */
     fun applyUserAgent(ua: String, desktop: Boolean) {
+        val changed = runCatching { webView.settings.userAgentString != ua }.getOrDefault(true)
         runCatching {
-            webView.settings.userAgentString = ua
-            webView.settings.useWideViewPort = true
-            webView.settings.loadWithOverviewMode = true
-            webView.settings.setSupportZoom(true)
-            webView.settings.builtInZoomControls = true
-            webView.settings.displayZoomControls = false
-            webView.setInitialScale(0)
-            // 换 UA 后若还留在软件渲染层会明显卡顿，这里强制回硬件层
-            webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+            val st = webView.settings
+            st.userAgentString = ua
+            if (desktop) {
+                // 桌面 UA 配 wideViewport 会让页面宽度锁死在 980px，手势被横向滚动吃掉 → 表现为「划不动」
+                st.useWideViewPort = false
+                st.loadWithOverviewMode = true
+                st.setSupportZoom(true)
+                st.builtInZoomControls = true
+                st.displayZoomControls = false
+                st.textZoom = 100
+                webView.setInitialScale(0)
+            } else {
+                st.useWideViewPort = true
+                st.loadWithOverviewMode = true
+                st.setSupportZoom(true)
+                st.builtInZoomControls = true
+                st.displayZoomControls = false
+                webView.setInitialScale(0)
+            }
+            // 不再手动切 LAYER_TYPE_HARDWARE，软硬切换本身就会引起首屏抖动
             webView.isNestedScrollingEnabled = true
             webView.requestDisallowInterceptTouchEvent(false)
+            webView.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER)
         }
-        webView.reload()
+        if (changed) webView.reload()
     }
 
     fun snapshotCurrent() {

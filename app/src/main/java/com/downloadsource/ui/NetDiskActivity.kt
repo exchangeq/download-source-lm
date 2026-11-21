@@ -134,9 +134,21 @@ fun NetDiskScreen(onBack: () -> Unit) {
             Button(
                 onClick = {
                     val toDownload = parsedFiles.filter { selectedFiles.contains(it.name) }
-                    toDownload.forEach { file ->
-                        DownloadManager.add(ctx, file.url, file.name, 8, 0, emptyMap(), DirStore.resolveDownloadDir(ctx))
+                    // 网盘直链必须带登录态与来源头，否则夸克会直接 403 / 只给一小段
+                    val cookie = com.downloadsource.storage.CookieStore.load(ctx, "quark")
+                        ?: runCatching {
+                            android.webkit.CookieManager.getInstance().getCookie("https://pan.quark.cn")
+                        }.getOrNull()
+                    val headers = buildMap<String, String> {
+                        if (!cookie.isNullOrBlank()) put("Cookie", cookie)
+                        put("Referer", "https://pan.quark.cn/")
+                        put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
                     }
+                    val dir = DirStore.resolveDownloadDir(ctx)
+                    toDownload.forEach { file ->
+                        DownloadManager.add(ctx, file.url, file.name, 16, 0, headers, dir)
+                    }
+                    android.widget.Toast.makeText(ctx, "已加入 ${toDownload.size} 个下载任务", android.widget.Toast.LENGTH_SHORT).show()
                     onBack()
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),

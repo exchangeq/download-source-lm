@@ -280,6 +280,17 @@ class Segmenter(private val client: OkHttpClient) {
         }.awaitAll()
     }
 
+    /** 跳过 n 字节但不受 BufferedInputStream 大跳影响 */
+    private fun skipFully(ins: java.io.InputStream, n: Long) {
+        var left = n
+        val tmp = ByteArray(64 * 1024)
+        while (left > 0) {
+            val r = ins.read(tmp, 0, minOf(tmp.size.toLong(), left).toInt())
+            if (r <= 0) throw Exception("跳过偏移失败，剩余 $left 字节")
+            left -= r
+        }
+    }
+
     private suspend fun retryDownloadRange(taskId: String, url: String, start: Long, end: Long, file: File, counter: AtomicLong, rateLimiter: GlobalRateLimiter, headers: okhttp3.Headers, allow200: Boolean) {
         var attempt = 0
         while (attempt < 4) {
@@ -317,18 +328,26 @@ class Segmenter(private val client: OkHttpClient) {
                     val crStart = resp.header("Content-Range")?.substringAfter("bytes ")?.substringBefore("-")?.trim()?.toLongOrNull()
                     if (crStart != null && crStart != start) throw Exception("区间起点不一致：请求 $start，返回 $crStart")
                 }
+                val want = end - start + 1
+                val fullBody = resp.code == 200
                 RandomAccessFile(file, "rw").use { raf ->
                     raf.seek(start)
                     resp.body?.byteStream()?.use { ins ->
+                        // 服务端忽略 Range 返回整文件时，必须先跳过 start 字节，否则分片会互相覆盖
+                        if (fullBody && start > 0) skipFully(ins, start)
                         val buf = ByteArray(4 * 1024 * 1024)
-                        while (true) {
+                        var written = 0L
+                        while (written < want) {
                             if (!currentCoroutineContext().isActive) break
-                            val r = ins.read(buf)
+                            val r = ins.read(buf, 0, minOf(buf.size.toLong(), want - written).toInt())
                             if (r <= 0) break
                             raf.write(buf, 0, r)
+                            written += r
                             downloaded.addAndGet(r.toLong())
                             rateLimiter.acquire(r.toLong())
                         }
+                        // 关键校验：区间没下满就是残缺（以前会生成「大小对但只有片头」的文件）
+                        if (written < want) throw Exception("分片不完整：$written/$want 字节")
                     }
                 }
             }

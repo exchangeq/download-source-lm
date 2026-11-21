@@ -321,8 +321,11 @@ object DownloadManager {
         run {
             val dir = File(t.dirPath)
             val free = try { dir.usableSpace } catch (e: Exception) { Long.MAX_VALUE }
-            if (free in 1..(100L shl 20)) {
-                updateTaskState(context, id) { it.copy(status = TaskStatus.Failed, error = "存储空间不足（剩余 ${free / 1024 / 1024}MB）") }
+            val need = if (t.totalBytes > 0) t.totalBytes + (t.totalBytes / 10) else 0L
+            if (free in 1..(100L shl 20) || (need > 0 && free in 1..need)) {
+                val mb = free / 1024 / 1024
+                val needMb = need / 1024 / 1024
+                updateTaskState(context, id) { it.copy(status = TaskStatus.Failed, error = if (need > 0) "存储空间不足（需要约 ${needMb}MB，剩余 ${mb}MB）" else "存储空间不足（剩余 ${mb}MB）") }
                 return
             }
         }
