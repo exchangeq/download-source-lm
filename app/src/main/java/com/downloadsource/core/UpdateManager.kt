@@ -78,39 +78,36 @@ object UpdateManager {
     }
 
     private fun pick(els: List<com.google.gson.JsonObject>, rawCurrentVersion: String): ReleaseInfo? {
-        try {
-            val currentVersion = rawCurrentVersion.trim()
-            // 通道识别按 applicationId 判断，比看资产名字更可靠
-                val isBeta = BuildConfig.APPLICATION_ID.endsWith(".beta") || BuildConfig.CHANNEL == "zeta"
-                var best: ReleaseInfo? = null
-                var bestVer: String? = null
-
-                for (json in els) {
-                    if (json.get("draft")?.asBoolean == true || json.get("prerelease")?.asBoolean == true) continue
-                    val tag = json.get("tag_name")?.asString ?: continue
-                    val body = json.get("body")?.asString ?: ""
-                    val version = tag.removePrefix("v").removeSuffix("-lm").removeSuffix("-LM")
-                        .removeSuffix("-beta").trim()
-                    val assets = json.getAsJsonArray("assets")?.map { it.asJsonObject } ?: emptyList()
-                    val apks = assets.filter { it.get("name")?.asString?.endsWith(".apk") == true }
-
-                    // 优先选「品牌名 + 版本号」的成品包，排除 app-omega-release 这类内部名
-                    val branded = apks.filter { it.get("name")?.asString?.contains("LM-Ultra-Fast-Downloader", true) == true }
-                    val channel = branded.filter {
-                        val n = it.get("name")?.asString?.lowercase() ?: ""
-                        if (isBeta) n.contains("beta") else !n.contains("beta")
-                    }
-                    val apk = channel.firstOrNull() ?: branded.firstOrNull() ?: apks.firstOrNull()
-                    val apkUrl = apk?.get("browser_download_url")?.asString
-
-                    if (!apkUrl.isNullOrBlank() && (bestVer == null || isNewerVersion(version, bestVer))
-                        && isNewerVersion(version, currentVersion)
-                    ) {
-                        bestVer = version
-                        best = ReleaseInfo(version, apkUrl, body, isBeta)
-                    }
+        val currentVersion = rawCurrentVersion.trim()
+        // 通道识别按 applicationId 判断，比看资产名字更可靠
+        val isBeta = BuildConfig.APPLICATION_ID.endsWith(".beta") || BuildConfig.CHANNEL == "zeta"
+        var best: ReleaseInfo? = null
+        var bestVer: String? = null
+        return try {
+            for (json in els) {
+                if (json.get("draft")?.asBoolean == true || json.get("prerelease")?.asBoolean == true) continue
+                val tag = json.get("tag_name")?.asString ?: continue
+                val body = json.get("body")?.asString ?: ""
+                val version = tag.removePrefix("v").removeSuffix("-lm").removeSuffix("-LM")
+                    .removeSuffix("-beta").trim()
+                val assets = json.getAsJsonArray("assets")?.map { it.asJsonObject } ?: emptyList()
+                val apks = assets.filter { it.get("name")?.asString?.endsWith(".apk") == true }
+                // 优先选「品牌名 + 版本号」的成品包，排除 app-omega-release 这类内部名
+                val branded = apks.filter { it.get("name")?.asString?.contains("LM-Ultra-Fast-Downloader", true) == true }
+                val channel = branded.filter {
+                    val n = it.get("name")?.asString?.lowercase() ?: ""
+                    if (isBeta) n.contains("beta") else !n.contains("beta")
                 }
-            return best
+                val apk = channel.firstOrNull() ?: branded.firstOrNull() ?: apks.firstOrNull()
+                val apkUrl = apk?.get("browser_download_url")?.asString
+                if (!apkUrl.isNullOrBlank() && (bestVer == null || isNewerVersion(version, bestVer))
+                    && isNewerVersion(version, currentVersion)
+                ) {
+                    bestVer = version
+                    best = ReleaseInfo(version, apkUrl, body, isBeta)
+                }
+            }
+            best
         } catch (e: Exception) { null }
     }
 
