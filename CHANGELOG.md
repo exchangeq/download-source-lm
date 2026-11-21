@@ -1,3 +1,7 @@
+## v10.0-kappa1.3
+- 修复文件库空白：新增存储权限（READ/WRITE + MANAGE_EXTERNAL_STORAGE）与授权引导，目录改用真实写探针判断，扫描覆盖公共下载/应用专属/自定义路径三处
+- 文件库支持下拉刷新按钮、空态显示扫描目录与文件数，音频/安装包筛选覆盖 m4a/xapk/apkm/apks/aab 等
+- 三层格式识别落地：扩展名表 + MIME + C 层魔数（C++/NDK `nativeSniffExt`，含 mpkg/xar、webp/avi/wav 细分）+ ZIP 容器内探测（apk/apkm/mpkg/epub/docx/xlsx/pptx/cbz）
 ## v10.0-kappa1.2
 - 修复标签页总览点击卡片后打不开：切换标签统一走单一加载入口，起始页覆盖层只在真正空白页显示，并新增「跳过，直接浏览」
 - 新增首次启动免责声明（不同意则退出），设置页可随时查看

@@ -74,6 +74,29 @@ class MainActivity : ComponentActivity() {
         return (System.currentTimeMillis() - ThemeStore.getLastUnlockTime(this)) > 900_000L
     }
 
+    /** Android 11+ 需要「所有文件访问」才能把下载写进公共 Downloads 并让文件库读到 */
+    private fun ensureStorageAccess() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return
+        if (android.os.Environment.isExternalStorageManager()) return
+        runCatching {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("需要存储权限")
+                .setMessage("授予「所有文件访问」后，下载才能写进公共下载目录，文件库才能扫到已下载文件。")
+                .setPositiveButton("去授权") { _, _ ->
+                    runCatching {
+                        startActivity(android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            android.net.Uri.parse("package:$packageName")
+                        ))
+                    }.onFailure {
+                        startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                    }
+                }
+                .setNegativeButton("稍后", null)
+                .show()
+        }
+    }
+
     private fun showDisclaimerIfNeeded() {
         if (com.downloadsource.storage.DisclaimerStore.isAccepted(this)) return
         android.app.AlertDialog.Builder(this)
@@ -90,11 +113,16 @@ class MainActivity : ComponentActivity() {
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+            requestPermissions(arrayOf(
+                android.Manifest.permission.POST_NOTIFICATIONS,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ), 1001)
         }
         PyRuleEngine.init(this)
         com.downloadsource.storage.UpgradeKeeper.run(this, BuildConfig.VERSION_NAME)
         showDisclaimerIfNeeded()
+        ensureStorageAccess()
         setContent {
             val palette = rememberPalette()
             Box(Modifier.fillMaxSize().background(palette.background.first())) {

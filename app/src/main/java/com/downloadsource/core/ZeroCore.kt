@@ -24,6 +24,8 @@ object ZeroCore {
     private external fun nativeFallocate(path: String, size: Long): Boolean
     private external fun nativeMergeFiles(parts: Array<String>, output: String): Boolean
     private external fun nativeCrc32(path: String): Long
+    private external fun nativeSniffExt(head: ByteArray): String?
+    private external fun nativeProbeZipKind(path: String): String?
 
     // --- 暴露给业务的降级方法 ---
 
@@ -64,6 +66,18 @@ object ZeroCore {
             }
             true
         } catch (e: Exception) { false }
+    }
+
+    /** C 层魔数嗅探：返回不带点的扩展名，识别不了返回 null */
+    fun sniffExt(head: ByteArray): String? {
+        if (isLoaded) runCatching { nativeSniffExt(head)?.takeIf { it.isNotBlank() }?.let { return it } }
+        return null
+    }
+
+    /** C 层 ZIP 容器内探测：apk / apkm / mpkg / epub / docx / xlsx / pptx / cbz */
+    fun probeZipKind(path: String): String? {
+        if (isLoaded) runCatching { nativeProbeZipKind(path)?.takeIf { it.isNotBlank() }?.let { return it } }
+        return null
     }
 
     fun crc32(path: String): Long {

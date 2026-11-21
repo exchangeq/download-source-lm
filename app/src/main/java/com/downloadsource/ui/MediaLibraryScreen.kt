@@ -108,6 +108,7 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
     var searchQuery by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf("时间") } 
     
+    var refreshTick by remember { mutableIntStateOf(0) }
     var showVault by remember { mutableStateOf(false) }
     var showVaultAuth by remember { mutableStateOf(false) }
     var showSetVaultPwd by remember { mutableStateOf(false) }
@@ -127,11 +128,15 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
 
     val filters = listOf("全部", "视频", "音频", "安装包")
 
-    LaunchedEffect(selectedFilter, showVault, vaultTick) {
+    var scannedDirs by remember { mutableStateOf("") }
+    LaunchedEffect(selectedFilter, showVault, vaultTick, refreshTick) {
         withContext(Dispatchers.IO) {
             if (!showVault) {
-                val dir = DirStore.resolveDownloadDir(ctx)
-                files = dir.listFiles()?.filter { it.isFile && !it.name.startsWith(".") } ?: emptyList()
+                val dirs = DirStore.candidateDirs(ctx)
+                scannedDirs = dirs.joinToString("\n") { it.absolutePath }
+                files = dirs.flatMap { d ->
+                    runCatching { d.walkTopDown().maxDepth(3).filter { it.isFile && !it.name.startsWith(".") && !it.name.endsWith(".part") && !it.name.endsWith(".lmv") }.toList() }.getOrDefault(emptyList())
+                }.distinctBy { it.absolutePath }
             } else {
                 vaultItems = com.downloadsource.storage.VaultRepo.list(ctx)
                 vaultCount = vaultItems.size
@@ -321,6 +326,7 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
                     if (vaultCount > 0) androidx.compose.material3.Badge { Text(vaultCount.toString()) }
                 }) { Icon(Icons.Default.Lock, "私密保险箱", tint = palette.primary.first()) }
             }
+            IconButton(onClick = { refreshTick++ }) { Icon(Icons.Default.Refresh, "刷新", tint = palette.onSurface) }
             IconButton(onClick = { sortBy = if (sortBy == "时间") "大小" else "时间" }) { Icon(Icons.Default.Sort, null, tint = palette.onSurface) }
         }
         
@@ -351,8 +357,8 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
         var filteredFiles = files.filter {
             val matchesFilter = when (selectedFilter) {
                 "视频" -> isVideoFile(it.name)
-                "音频" -> it.name.endsWith(".mp3", true) || it.name.endsWith(".m4a", true)
-                "安装包" -> it.name.endsWith(".apk", true)
+                "音频" -> isAudioFile(it.name)
+                "安装包" -> listOf(".apk", ".xapk", ".apkm", ".apks", ".aab").any { e -> it.name.endsWith(e, true) }
                 else -> true
             }
             val matchesSearch = it.name.contains(searchQuery, true)
@@ -362,7 +368,16 @@ fun MediaLibraryScreen(onPlayVideo: (File) -> Unit) {
         filteredFiles = if (sortBy == "时间") filteredFiles.sortedByDescending { it.lastModified() } else filteredFiles.sortedByDescending { it.length() }
 
         if (filteredFiles.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到文件哦 (´･_･`)", color = palette.onSurfaceDim) }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Text("没有找到文件哦 (´･_･`)", color = palette.onSurfaceDim)
+                    Spacer(Modifier.height(8.dp))
+                    Text("已扫描 ${files.size} 个文件，目录：", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                    Text(scannedDirs.ifBlank { "(无)" }, color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = { refreshTick++ }, shape = RoundedCornerShape(50)) { Text("重新扫描") }
+                }
+            }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(filteredFiles) { file ->

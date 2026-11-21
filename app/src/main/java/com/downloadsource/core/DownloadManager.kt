@@ -215,14 +215,19 @@ object DownloadManager {
                 val brand = String(head.copyOfRange(8, 12), Charsets.ISO_8859_1)
                 if (brand.startsWith("M4A")) "m4a" else if (brand.startsWith("qt")) "mov" else "mp4"
             }
-            else -> ""
+            else -> com.downloadsource.core.ZeroCore.sniffExt(head) ?: ""
         }
         if (detected.isEmpty()) return file
         // zip 家族：apk/xapk 本身也是 zip，别把 apk 改成 zip
         val finalExt = if (detected == "zip") {
             when (ext) {
-                "apk", "xapk", "apks", "aab", "epub", "docx", "xlsx", "pptx", "jar" -> ext
-                else -> if (file.name.contains("AndroidManifest") || looksLikeApk(file)) "apk" else "zip"
+                "apk", "xapk", "apkm", "apks", "aab", "epub", "docx", "xlsx", "pptx", "jar", "mpkg", "cbz", "apkg" -> ext
+                else -> {
+                    // 三层识别第三层：容器内探测真实类型
+                    val kind = com.downloadsource.core.ZeroCore.probeZipKind(file.absolutePath)
+                    if (!kind.isNullOrBlank()) kind
+                    else if (file.name.contains("AndroidManifest") || looksLikeApk(file)) "apk" else "zip"
+                }
             }
         } else detected
         if (ext == finalExt) return file
