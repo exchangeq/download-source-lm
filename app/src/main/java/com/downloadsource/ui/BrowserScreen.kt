@@ -779,6 +779,17 @@ fun BrowserScreen(
                 Spacer(Modifier.width(6.dp))
                 Box(
                     Modifier.weight(1f).height(if (browserUi == 1) 50.dp else if (browserUi == 2) 38.dp else 44.dp).clip(RoundedCornerShape(if (browserUi == 1) 25.dp else if (browserUi == 2) 19.dp else 22.dp))
+                        .combinedClickable(
+                            onClick = { addressFocused = true },
+                            onLongClick = {
+                                val u = webView.url ?: urlInput
+                                if (u.isNotBlank()) {
+                                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cm.setPrimaryClip(android.content.ClipData.newPlainText("url", u))
+                                    android.widget.Toast.makeText(ctx, "已复制当前链接", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
                         .background(palette.surface)
                         .border(1.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), palette.onSurface.copy(alpha = 0.12f))), RoundedCornerShape(if (browserUi == 1) 25.dp else if (browserUi == 2) 19.dp else 22.dp))
                 ) {

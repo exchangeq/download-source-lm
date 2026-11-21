@@ -1,6 +1,8 @@
 package com.downloadsource.core
 
+import android.content.Context
 import android.util.Base64
+import com.google.gson.JsonParser
 import java.net.URLDecoder
 
 /**
@@ -10,6 +12,36 @@ import java.net.URLDecoder
 object FileNameResolver {
 
     private const val MAX_LEN = 120
+
+    // 系统 mime.types 转出的数据表（1500 个扩展名 / 1176 个 MIME），App 启动时加载
+    private var dataMimeToExt: Map<String, String> = emptyMap()
+    private var dataExtSet: Set<String> = emptySet()
+    private var loaded = false
+
+    fun init(ctx: Context) {
+        if (loaded) return
+        loaded = true
+        runCatching {
+            val json = ctx.assets.open("mime_map.json").bufferedReader().use { it.readText() }
+            val root = JsonParser.parseString(json).asJsonObject
+            val m = mutableMapOf<String, String>()
+            root.getAsJsonObject("mime_to_ext")?.entrySet()?.forEach { (k, v) ->
+                runCatching { v.asString }.getOrNull()?.takeIf { it.isNotBlank() }?.let { m[k.lowercase()] = ".$it" }
+            }
+            val e = mutableSetOf<String>()
+            root.getAsJsonObject("ext_to_mime")?.keySet()?.forEach { e.add(it.lowercase()) }
+            dataMimeToExt = m
+            dataExtSet = e
+        }
+    }
+
+    private fun extForMime(mime: String?): String? {
+        val m = mime?.substringBefore(';')?.trim()?.lowercase() ?: return null
+        MIME_EXT[m]?.let { return it }
+        return dataMimeToExt[m]
+    }
+
+    private fun knownExt(ext: String): Boolean = ext in KNOWN_EXT || ext in dataExtSet
 
     private val MIME_EXT = mapOf(
         // 压缩包
@@ -119,8 +151,7 @@ object FileNameResolver {
         val fromUrl = fromUrl(url)
         if (!fromUrl.isNullOrBlank()) return sanitize(fromUrl, url, contentType)
 
-        val mime = contentType?.substringBefore(';')?.trim()?.lowercase()
-        val ext = mime?.let { MIME_EXT[it] }
+        val ext = extForMime(contentType)
         if (ext != null && ext != ".bin") return "file_${System.currentTimeMillis()}$ext"
         return null
     }
@@ -151,7 +182,7 @@ object FileNameResolver {
         if (last.isNotBlank()) {
             val decoded = decodePercent(last, "UTF-8") ?: last
             val ext = decoded.substringAfterLast('.', "").lowercase()
-            if (ext.isNotEmpty() && (ext in KNOWN_EXT || ext.length in 2..5)) return decoded
+            if (ext.isNotEmpty() && (knownExt(ext) || ext.length in 2..5)) return decoded
             if (decoded.contains('.') && decoded.length > 3) return decoded
         }
         // URL 里带 ?file=xxx.zip / ?filename= 的站点

@@ -9,6 +9,7 @@ import java.io.StringWriter
 class DsApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        com.downloadsource.core.FileNameResolver.init(this)
         DownloadManager.init(this)
 
         val prev = Thread.getDefaultUncaughtExceptionHandler()
