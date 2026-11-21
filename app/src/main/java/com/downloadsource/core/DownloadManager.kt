@@ -232,15 +232,18 @@ object DownloadManager {
     // 扩展名分类表：覆盖 150+ 常见容器/封装，未知扩展名一律原样保留，不会被改名成 .bin
     private val VIDEO_EXTS = setOf(
         "mp4", "mkv", "avi", "mov", "ts", "m2ts", "mts", "webm", "flv", "f4v", "m4v", "wmv", "ogv", "ogm",
-        "rmvb", "rm", "3gp", "3g2", "vob", "asf", "m3u8", "mpd", "m4s", "divx", "xvid", "dv", "mxf", "wtv", "nut"
+        "rmvb", "rm", "3gp", "3g2", "vob", "asf", "m3u8", "mpd", "m4s", "divx", "xvid", "dv", "mxf", "wtv", "nut",
+        "mk3d", "evo", "h264", "h265", "hevc", "av1", "ivf", "yuv", "m1v", "m2v", "mpg", "mpeg", "dat", "vro", "ifo"
     )
     private val AUDIO_EXTS = setOf(
         "mp3", "flac", "wav", "aac", "m4a", "m4b", "ogg", "opus", "wma", "ape", "aiff", "aif", "ac3", "amr",
-        "mka", "tta", "dts", "mid", "midi", "ra", "au", "caf", "wv", "spx"
+        "mka", "tta", "dts", "mid", "midi", "ra", "au", "caf", "wv", "spx", "dsf", "dff", "m4r", "3ga", "amr",
+        "voc", "s3m", "xm", "it", "mod", "mt2"
     )
     private val PACKAGE_EXTS = setOf(
         "apk", "apks", "xapk", "apkm", "aab", "ipa", "exe", "msi", "msix", "dmg", "pkg", "mpkg", "deb", "rpm",
-        "iso", "img", "vhd", "vhdx", "appimage", "crx", "xpi", "wgt", "jar", "sis", "sisx", "cab", "air"
+        "iso", "img", "vhd", "vhdx", "appimage", "crx", "xpi", "wgt", "jar", "sis", "sisx", "cab", "air",
+        "mpkg", "run", "flatpak", "snap", "appx", "msu", "pkg.tar.zst", "eop", "itz"
     )
     private val IMAGE_EXTS = setOf(
         "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "avif", "tif", "tiff", "ico", "psd",
@@ -249,11 +252,12 @@ object DownloadManager {
     private val DOC_EXTS = setOf(
         "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "epub", "mobi", "azw3", "azw",
         "json", "xml", "html", "htm", "rtf", "odt", "ods", "odp", "pages", "numbers", "key", "djvu", "chm",
-        "tex", "srt", "ass", "vtt", "lrc"
+        "tex", "srt", "ass", "vtt", "lrc", "cbz", "cbr", "cb7", "djvu2", "xps", "oxps", "wps", "et", "dps",
+        "one", "msg", "eml", "ics", "vcf", "log", "ini", "yaml", "yml", "toml", "sql", "db", "bak"
     )
     private val ARCHIVE_EXTS = setOf(
         "zip", "rar", "7z", "tar", "gz", "tgz", "xz", "bz2", "tbz2", "zst", "lz4", "lzma", "z", "arj", "lzh",
-        "ace", "torrent", "par2", "001"
+        "ace", "torrent", "par2", "001", "r00", "zipx", "zpaq", "br", "cpio", "ar", "a", "lha", "pea", "zip.001"
     )
 
     private fun createCategoryDir(baseDir: File, fileName: String): File {
@@ -317,6 +321,14 @@ object DownloadManager {
                 // TS(M3U8 合并/DASH 某些源)统一重封装成标准 MP4，避免黑屏、无音轨
                 if (com.downloadsource.core.TsRemuxer.isTs(finalOut)) {
                     finalOut = com.downloadsource.core.TsRemuxer.remux(finalOut) ?: finalOut
+                }
+                // 完整性校验：大文件下载完成后核对体积，明显缺口就抛错触发自动重试
+                val expect = _tasks.value.firstOrNull { it.id == id }?.totalBytes ?: 0L
+                if (expect > 1024L * 1024 && !finalOut.name.contains(".ts", true)) {
+                    val len = finalOut.length()
+                    if (len <= 0L || len + 64 * 1024 < expect) {
+                        throw Exception("文件不完整：$len/$expect 字节，已自动重试")
+                    }
                 }
                 updateTaskState(context, id) { it.copy(status = TaskStatus.Completed, fileName = finalOut.name, downloadedBytes = maxOf(it.totalBytes, finalOut.length()), totalBytes = maxOf(it.totalBytes, finalOut.length()), speed = 0, outputPath = finalOut.absolutePath) }
 

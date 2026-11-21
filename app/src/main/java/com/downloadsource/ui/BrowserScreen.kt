@@ -300,9 +300,25 @@ fun BrowserScreen(
                 progress = 100
                 if (url != null) {
                     syncTab(url)
+                    persistTabs()
                     lastHost = SiteScriptStore.hostOf(url)
                     if (!addressFocused) urlInput = url
                     if (!incognito && !url.startsWith("about:")) BrowserHistoryStore.addHistory(ctx, url)
+                    runCatching {
+                        val host = SiteScriptStore.hostOf(url)
+                        val platform = when {
+                            host.contains("quark.cn") -> "quark"
+                            host.contains("baidu.com") -> "baidu"
+                            host.contains("aliyundrive.com") || host.contains("alipan.com") -> "aliyun"
+                            host.contains("115.com") -> "115"
+                            host.contains("123pan") -> "123pan"
+                            else -> ""
+                        }
+                        if (platform.isNotBlank()) {
+                            val c = android.webkit.CookieManager.getInstance().getCookie(url)
+                            if (!c.isNullOrBlank()) com.downloadsource.storage.CookieStore.save(ctx, platform, c)
+                        }
+                    }
                 }
                 view?.evaluateJavascript(webInterceptor.injectionScript, null)
                 val sy = currentTab()?.scrollY ?: 0
@@ -559,6 +575,18 @@ fun BrowserScreen(
             val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.RGB_565)
             webView.draw(android.graphics.Canvas(bmp))
             com.downloadsource.storage.TabThumbStore.save(ctx, tab.id, bmp)
+        }
+    }
+
+    /** 立即落盘，避免标题/网址变化时 snapshotFlow 抓不到 */
+    fun persistTabs() {
+        if (incognito) return
+        runCatching {
+            com.downloadsource.storage.TabStore.save(
+                ctx,
+                tabs.map { com.downloadsource.storage.TabStore.SavedTab(it.id, it.title, it.url, it.scrollY) },
+                activeId
+            )
         }
     }
 
@@ -947,6 +975,7 @@ fun BrowserScreen(
                     } }
                     item { MenuItem("关闭全部标签", Icons.Default.Delete, palette) {
                         showMenu = false
+                        tabs.forEach { com.downloadsource.storage.TabThumbStore.clear(ctx, it.id) }
                         tabs.clear()
                         val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
                         tabs.add(fresh)
@@ -974,6 +1003,122 @@ fun BrowserScreen(
         }
     }
 
+    if (showTabs) {
+        Dialog(
+            onDismissRequest = { showTabs = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Column(
+                Modifier.fillMaxSize().background(palette.background.first())
+                    .padding(horizontal = 14.dp).padding(top = 44.dp, bottom = 14.dp)
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("标签页总览", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = palette.onSurface)
+                        Text("${tabs.size} 个标签页 · 长按卡片可操作", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = {
+                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", "about:blank")
+                        tabs.add(tab); activeId = tab.id; showTabs = false
+                    }) { Text("新建") }
+                    TextButton(onClick = { showTabs = false }) { Text("完成") }
+                }
+                Spacer(Modifier.height(10.dp))
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    gridItems(tabs.toList(), key = { it.id }) { tab ->
+                        val active = tab.id == activeId
+                        Column(
+                            Modifier.fillMaxWidth().height(160.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (active) palette.primary.first().copy(alpha = 0.14f) else palette.surface)
+                                .border(
+                                    width = if (active) 2.dp else 1.dp,
+                                    color = if (active) palette.primary.first() else palette.onSurface.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .combinedClickable(
+                                    onClick = { switchTo(tab); showTabs = false },
+                                    onLongClick = { tabMenuId = tab.id }
+                                )
+                                .padding(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    if (active) "当前" else "${tabs.indexOf(tab) + 1}",
+                                    color = if (active) palette.primary.first() else palette.onSurfaceDim,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    Icons.Default.Close, "关闭标签页", tint = palette.onSurfaceDim,
+                                    modifier = Modifier.size(18.dp).clickable {
+                                        com.downloadsource.storage.TabThumbStore.clear(ctx, tab.id)
+                                        tabs.remove(tab)
+                                        if (tabs.isEmpty()) {
+                                            val fresh = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                                            tabs.add(fresh); activeId = fresh.id
+                                        } else if (tab.id == activeId) {
+                                            activeId = tabs.first().id
+                                        }
+                                    }.padding(2.dp)
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            val thumb = remember(tab.id) { com.downloadsource.storage.TabThumbStore.get(ctx, tab.id) }
+                            if (thumb != null) {
+                                val bmp = remember(tab.id) {
+                                    runCatching { android.graphics.BitmapFactory.decodeFile(thumb.absolutePath) }.getOrNull()
+                                }
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(), contentDescription = tab.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxWidth().height(52.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                            }
+                            Text(
+                                tab.title.ifBlank { "新标签页" },
+                                color = palette.onSurface, fontWeight = FontWeight.SemiBold,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                SiteScriptStore.hostOf(tab.url).ifBlank { tab.url },
+                                color = palette.onSurfaceDim, style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    item {
+                        Column(
+                            Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(16.dp))
+                                .background(palette.surface.copy(alpha = 0.6f))
+                                .clickable {
+                                    val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", engine.homeUrl)
+                                    tabs.add(tab); activeId = tab.id; showTabs = false
+                                },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(Icons.Default.Add, "新建标签页", tint = palette.onSurfaceDim)
+                            Spacer(Modifier.height(6.dp))
+                            Text("新建标签页", color = palette.onSurfaceDim, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     linkMenuUrl?.let { link ->
         Dialog(onDismissRequest = { linkMenuUrl = null }) {
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(palette.surface)) {
@@ -992,7 +1137,6 @@ fun BrowserScreen(
                     "在新标签页打开" to {
                         val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", link)
                         tabs.add(tab); activeId = tab.id
-                        webView.loadUrl(link)
                         linkMenuUrl = null
                     },
                     "后台打开（不切换）" to {

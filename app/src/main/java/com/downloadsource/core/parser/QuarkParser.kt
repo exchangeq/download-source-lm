@@ -17,12 +17,22 @@ object QuarkParser {
     suspend fun parse(ctx: Context, url: String, pwd: String?): List<DiskParser.FileInfo> = withContext(Dispatchers.IO) {
         val cookie = CookieStore.load(ctx, "quark") ?: error("请先在浏览器登录夸克网盘")
         val shareId = Regex("""/s/([a-zA-Z0-9]+)""").find(url)?.groupValues?.get(1) ?: error("链接识别失败")
+        // 链接里带的提取码优先
+        val pass = pwd?.takeIf { it.isNotBlank() }
+            ?: Regex("""[?&]pwd=([a-zA-Z0-9]{4,8})""").find(url)?.groupValues?.get(1)
+            ?: ""
 
         val tokenApi = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
-        val tokenBody = """{"pwd_id":"$shareId","passcode":"${pwd ?: ""}"}"""
+        val tokenBody = """{"pwd_id":"$shareId","passcode":"$pass"}"""
         val tokenReq = Request.Builder().url(tokenApi).post(tokenBody.toRequestBody("application/json".toMediaType())).header("Cookie", cookie).build()
         val tokenJson = JSONObject(client.newCall(tokenReq).execute().body?.string() ?: "")
-        val stoken = tokenJson.optJSONObject("data")?.optString("stoken") ?: error("获取Token失败，Cookie失效")
+        val stoken = tokenJson.optJSONObject("data")?.optString("stoken")?.takeIf { it.isNotBlank() }
+            ?: run {
+                val msg = tokenJson.optString("message")
+                if (msg.contains("密码") || msg.contains("passcode", true) || tokenJson.optInt("code") == 41008)
+                    error("这个分享需要提取码，请在链接后补 ?pwd=xxxx 再试")
+                error("获取 Token 失败（${tokenJson.optInt("code")}）：$msg。请先在浏览器里打开夸克分享页并登录")
+            }
 
         val results = mutableListOf<DiskParser.FileInfo>()
         // 开启分页拉取，每次拉 50 个
@@ -38,7 +48,11 @@ object QuarkParser {
             val detailApi = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken&pdir_fid=$pdirFid&force=0&_page=$page&_size=50"
             val detailReq = Request.Builder().url(detailApi).header("Cookie", cookie).build()
             val detailJson = JSONObject(client.newCall(detailReq).execute().body?.string() ?: "")
-            val dataObj = detailJson.optJSONObject("data") ?: break
+            val dataObj = detailJson.optJSONObject("data")
+                ?: run {
+                    val msg = detailJson.optString("message")
+                    error("读取分享目录失败：$msg（Cookie 可能已过期，请在浏览器重新登录夸克）")
+                }
             val list = dataObj.optJSONArray("list") ?: break
             
             if (list.length() == 0) { hasMore = false; break }
@@ -54,11 +68,23 @@ object QuarkParser {
                     // 递归进入子文件夹
                     fetchFolderWithPagination(cookie, shareId, stoken, fid, 1, results)
                 } else {
-                    val dlApi = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
-                    val dlBody = """{"fids":["$fid"]}"""
-                    val dlReq = Request.Builder().url(dlApi).post(dlBody.toRequestBody("application/json".toMediaType())).header("Cookie", cookie).build()
-                    val dlJson = JSONObject(client.newCall(dlReq).execute().body?.string() ?: "")
-                    val dlUrl = dlJson.optJSONArray("data")?.optJSONObject(0)?.optString("download_url")
+                    // 分享文件下载接口有多个版本，逐个尝试，命中即用
+                    var dlUrl: String? = null
+                    for (api in listOf(
+                        "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc&pwd_id=$shareId&stoken=$stoken",
+                        "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
+                    )) {
+                        val dlBody = """{"fids":["$fid"],"pwd_id":"$shareId","stoken":"$stoken"}"""
+                        val dlReq = Request.Builder().url(api)
+                            .post(dlBody.toRequestBody("application/json".toMediaType()))
+                            .header("Cookie", cookie).header("Referer", "https://pan.quark.cn/").build()
+                        val txt = runCatching { client.newCall(dlReq).execute().use { it.body?.string() ?: "" } }.getOrDefault("")
+                        val json = runCatching { JSONObject(txt) }.getOrNull()
+                        dlUrl = json?.optJSONArray("data")?.let { arr ->
+                            if (arr.length() == 0) null else arr.optJSONObject(0)?.optString("download_url")
+                        }?.takeIf { it.isNotBlank() } ?: json?.optJSONObject("data")?.optString("download_url")?.takeIf { it.isNotBlank() }
+                        if (dlUrl != null) break
+                    }
                     if (!dlUrl.isNullOrBlank()) {
                         results.add(DiskParser.FileInfo(name, dlUrl, size))
                     }
