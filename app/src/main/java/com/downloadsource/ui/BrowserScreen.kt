@@ -191,6 +191,8 @@ fun BrowserScreen(
     var blockBaidu by remember { mutableStateOf(BrowserPrefs.blockBaidu(ctx)) }
     var adBlockOn by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.isEnabled(ctx)) }
     var blankPage by remember { mutableStateOf(true) }
+    var autoReloadCount by remember { mutableIntStateOf(0) }
+    var lastBlankWatchUrl by remember { mutableStateOf("") }
     var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
     var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
@@ -336,6 +338,29 @@ fun BrowserScreen(
                 val siteJs = if (host.isNotBlank()) SiteScriptStore.get(ctx, host) else ""
                 if (siteJs.isNotBlank()) view?.evaluateJavascript("(function(){try{$siteJs}catch(e){console.warn('LM site script',e)}})();", null)
                 if (readerMode) view?.evaluateJavascript(WebScripts.readerMode, null)
+                // 白屏看门狗：页面「加载完成」但正文为空（站点脚本报错/被规则挡住/渲染进程异常）
+                if (!url.isNullOrBlank() && url.startsWith("http")) {
+                    view?.evaluateJavascript(
+                        "(function(){try{var b=document.body;if(!b)return -2;var t=(b.innerText||'').trim().length;" +
+                        "var e=b.querySelectorAll('img,canvas,video').length;return (t===0&&e===0)?0:1;}catch(x){return -1;}})()"
+                    ) { r ->
+                        val code = r?.trim()?.trim('"')?.toIntOrNull() ?: -1
+                        if (code == 0) {
+                            val samePage = lastBlankWatchUrl == url
+                            lastBlankWatchUrl = url
+                            if (!samePage && autoReloadCount < 1) {
+                                autoReloadCount += 1
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    runCatching { view?.reload() }
+                                }, 600)
+                            } else {
+                                pageError = "页面内容为空：可能被广告规则、站点脚本或渲染进程拦截，可重试或开启兼容渲染"
+                            }
+                        } else {
+                            autoReloadCount = 0
+                        }
+                    }
+                }
             }
 
             override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
@@ -379,7 +404,7 @@ fun BrowserScreen(
             override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
                 val url = request.url.toString()
                 // 广告拦截：只掐广告/追踪域名，返回空响应，避免整站白屏
-                if (adBlockOn && url.startsWith("http") && PyRuleEngine.shouldBlock(url)) {
+                if (adBlockOn && url.startsWith("http") && !request.isForMainFrame && PyRuleEngine.shouldBlock(url)) {
                     com.downloadsource.storage.AdBlockStore.addBlocked(ctx)
                     android.os.Handler(android.os.Looper.getMainLooper()).post { adBlockedCount += 1 }
                     return android.webkit.WebResourceResponse(
@@ -414,17 +439,25 @@ fun BrowserScreen(
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
                 val tmp = WebView(ctx)
                 tmp.settings.userAgentString = if (BrowserPrefs.isDesktop(ctx)) DESKTOP_UA else UserAgents.resolve(BrowserPrefs.getUaKey(ctx))
+                val opened = java.util.concurrent.atomic.AtomicBoolean(false)
+                fun adopt(target: String) {
+                    if (target.isBlank() || !opened.compareAndSet(false, true)) return
+                    val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", target)
+                    tabs.add(tab)
+                    activeId = tab.id
+                    urlInput = target
+                    blankPage = false
+                    webView.loadUrl(target)
+                    runCatching { tmp.stopLoading(); tmp.destroy() }
+                }
                 tmp.webViewClient = object : android.webkit.WebViewClient() {
                     override fun shouldOverrideUrlLoading(v: WebView, req: android.webkit.WebResourceRequest): Boolean {
-                        val target = req.url.toString()
-                        val tab = BrowserTab(idGen.getAndIncrement(), "新标签页", target)
-                        tabs.add(tab)
-                        activeId = tab.id
-                        urlInput = target
-                        blankPage = false
-                        webView.loadUrl(target)
-                        runCatching { tmp.stopLoading(); tmp.destroy() }
-                        return true
+                        adopt(req.url.toString()); return true
+                    }
+                    override fun onPageStarted(v: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                        super.onPageStarted(v, url, favicon)
+                        // 有些站点 target=_blank 后直接渲染页面，不走 shouldOverride
+                        if (url != null) adopt(url)
                     }
                 }
                 transport.webView = tmp
@@ -556,6 +589,16 @@ fun BrowserScreen(
 
     /** 切走前存快照：滚动位置 + 当前画面缩略图 */
     /** 切换 UA：统一处理 viewport / 缩放 / 渲染层，避免桌面模式划不动、换 UA 后卡顿 */
+    /** 嗅探/直链下载必须带上浏览器当前会话头，否则大量站点只给片段或直接 403 */
+    fun browserHeaders(target: String): Map<String, String> = buildMap {
+        runCatching {
+            val cookie = android.webkit.CookieManager.getInstance().getCookie(target)
+            if (!cookie.isNullOrBlank()) put("Cookie", cookie)
+        }
+        put("Referer", runCatching { webView.url }.getOrNull() ?: target)
+        put("User-Agent", runCatching { webView.settings.userAgentString }.getOrNull() ?: UserAgents.DEFAULT)
+    }
+
     fun applyUserAgent(ua: String, desktop: Boolean) {
         val changed = runCatching { webView.settings.userAgentString != ua }.getOrDefault(true)
         runCatching {
@@ -622,7 +665,7 @@ fun BrowserScreen(
         if (real) {
             blankPage = false
             urlInput = tab.url
-            webView.loadUrl(tab.url)
+            // 实际加载统一交给 LaunchedEffect(activeId)，避免同一页被 load 两次导致白屏
         } else {
             blankPage = true
         }
@@ -633,7 +676,15 @@ fun BrowserScreen(
         val target = tab.url.ifBlank { "about:blank" }
         urlInput = if (target == "about:blank") "" else target
         blankPage = target == "about:blank"
-        webView.loadUrl(target)
+        val current = runCatching { webView.url }.getOrNull()
+        if (target == "about:blank") {
+            if (!current.isNullOrBlank() && !current.startsWith("about:")) {
+                runCatching { webView.stopLoading() }
+                webView.loadUrl("about:blank")
+            }
+        } else if (current != target) {
+            webView.loadUrl(target)
+        }
     }
 
     LaunchedEffect(rebuildTick) {
@@ -764,7 +815,8 @@ fun BrowserScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
                 val tabBlank = currentTab()?.url?.let { it.isBlank() || it.startsWith("about:") } ?: true
-                if (blankPage && tabBlank) {
+                // 只要当前标签没有真实网址，就一定显示起始页，绝不留纯白
+                if (tabBlank) {
                     BrowserStartPage(
                         palette = palette,
                         incognito = incognito,
@@ -1284,7 +1336,7 @@ fun BrowserScreen(
                             var added = 0
                             sniffedUrls.take(20).forEach { media ->
                                 if (!media.isBlob) {
-                                    DownloadManager.add(ctx, media.url, null, 16, 0, emptyMap(), DirStore.resolveDownloadDir(ctx))
+                                    DownloadManager.add(ctx, media.url, null, 16, 0, browserHeaders(media.url), DirStore.resolveDownloadDir(ctx))
                                     added++
                                 }
                             }
@@ -1293,7 +1345,7 @@ fun BrowserScreen(
                         }) { Text("全部下载") }
                         TextButton(onClick = {
                             val videos = sniffedUrls.filter { sniffKind(it.url) == "视频" && !it.isBlob }.take(10)
-                            videos.forEach { DownloadManager.add(ctx, it.url, null, 16, 0, emptyMap(), DirStore.resolveDownloadDir(ctx)) }
+                            videos.forEach { DownloadManager.add(ctx, it.url, null, 16, 0, browserHeaders(it.url), DirStore.resolveDownloadDir(ctx)) }
                             android.widget.Toast.makeText(ctx, "已入队 ${videos.size} 个视频", android.widget.Toast.LENGTH_SHORT).show()
                         }) { Text("仅视频") }
                         TextButton(onClick = {
@@ -1581,7 +1633,7 @@ fun BrowserScreen(
 
     if (showDownloadDialog) {
         AddTaskDialog(initialUrl = pendingDownloadUrl, initialName = pendingCustomName, onDismiss = { showDownloadDialog = false; pendingCustomName = "" }) { url, name, threads, speed, headers ->
-            DownloadManager.add(ctx, url, name, threads, speed, headers, DirStore.resolveDownloadDir(ctx))
+            DownloadManager.add(ctx, url, name, threads, speed, if (headers.isEmpty()) browserHeaders(url) else headers, DirStore.resolveDownloadDir(ctx))
             showDownloadDialog = false
         }
     }
