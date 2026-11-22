@@ -207,6 +207,7 @@ fun BrowserScreen(
     var lastBlankWatchUrl by remember { mutableStateOf("") }
     val autoFitDone = remember { mutableSetOf<String>() }
     var autoRetryDone by remember { mutableStateOf(setOf<String>()) }
+    val blackHealDone = remember { mutableSetOf<String>() }
     var adBlockedCount by remember { mutableStateOf(com.downloadsource.storage.AdBlockStore.blockedCount(ctx)) }
     var lastHost by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
@@ -417,6 +418,56 @@ fun BrowserScreen(
                         }
                     }
                 }
+                // 黑屏自检（C 层像素分析）：加载完成后 1.2s 截一帧，整屏近黑就自愈
+                if (!url.isNullOrBlank() && url.startsWith("http")) {
+                    val healHost = SiteScriptStore.hostOf(url)
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        val v = view ?: return@postDelayed
+                        v.evaluateJavascript(
+                            "(function(){try{var b=document.body;var t=(b?b.innerText:'').trim().length;" +
+                            "var vid=b?b.querySelectorAll('video,canvas').length:0;return t+':'+vid;}catch(e){return '0:0'}})()"
+                        ) { info ->
+                            val raw = info?.trim()?.trim('"') ?: ""
+                            val txtLen = raw.substringBefore(':').toIntOrNull() ?: 0
+                            val mediaCnt = raw.substringAfter(':').toIntOrNull() ?: 0
+                            // 没有正文（交给白屏看门狗）或有视频/画布（播放器起画前本来就是黑的）都不判黑屏
+                            if (txtLen >= 30 && mediaCnt == 0) {
+                                val act = (ctx as? android.app.Activity)
+                                    ?: ((ctx as? android.content.ContextWrapper)?.baseContext as? android.app.Activity)
+                                com.downloadsource.web.FrameProbe.grab(v, act) { bmp ->
+                                    if (bmp != null) {
+                                        val stats = com.downloadsource.web.FrameProbe.lumaOf(bmp)
+                                        runCatching { bmp.recycle() }
+                                        val blackRatio = stats?.blackRatio ?: 0f
+                                        val darkRatio = stats?.darkRatio ?: 0f
+                                        if (blackRatio >= 0.85f || blackRatio + darkRatio >= 0.97f) {
+                                            val softKey = "soft|$healHost"
+                                            val adKey = "ad|$healHost"
+                                            if (blackHealDone.add(softKey)) {
+                                                // ① GPU 合成黑屏：该站点切软件渲染
+                                                com.downloadsource.storage.RenderCompatStore.setSoftware(ctx, healHost, true)
+                                                runCatching { v.setLayerType(View.LAYER_TYPE_SOFTWARE, null) }
+                                                pageError = "检测到整屏黑屏，已为该站点启用软件渲染并重载"
+                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                    runCatching { view?.reload() }
+                                                }, 400)
+                                            } else if (adBlockOn && com.downloadsource.storage.AdBlockStore.isHostExempt(ctx, healHost).not() && blackHealDone.add(adKey)) {
+                                                // ② 主体内容被广告规则误杀：按站点放行
+                                                com.downloadsource.storage.AdBlockStore.addHostExempt(ctx, healHost)
+                                                pageError = "该站点主体内容可能被广告规则拦掉，已为本站点放行"
+                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                    runCatching { view?.reload() }
+                                                }, 400)
+                                            } else {
+                                                pageError = "该页面在本机渲染失败（黑屏）：可切换 UA 或广告拦截后重试，也可用系统浏览器打开"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }, 1200)
+                }
             }
 
             override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
@@ -470,7 +521,9 @@ fun BrowserScreen(
             override fun shouldInterceptRequest(view: WebView, request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
                 val url = request.url.toString()
                 // 广告拦截：只掐广告/追踪域名，返回空响应，避免整站白屏
-                if (adBlockOn && url.startsWith("http") && !request.isForMainFrame && PyRuleEngine.shouldBlock(url)) {
+                if (adBlockOn && url.startsWith("http") && !request.isForMainFrame &&
+                    !com.downloadsource.storage.AdBlockStore.isHostExempt(ctx, SiteScriptStore.hostOf(view.url ?: "")) &&
+                    PyRuleEngine.shouldBlock(url)) {
                     com.downloadsource.storage.AdBlockStore.addBlocked(ctx)
                     android.os.Handler(android.os.Looper.getMainLooper()).post { adBlockedCount += 1 }
                     return android.webkit.WebResourceResponse(

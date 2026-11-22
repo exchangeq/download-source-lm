@@ -20,6 +20,26 @@ object AdBlockStore {
         sp.edit().putLong(KEY_COUNT, sp.getLong(KEY_COUNT, 0) + n).apply()
     }
 
+    /** 站点白名单：某些站点主体内容托管在被规则命中的域名上，拦了就是黑屏/白屏 */
+    fun isHostExempt(context: Context, host: String): Boolean =
+        host.isNotBlank() && hostExempts(context).contains(host.lowercase())
+
+    fun hostExempts(context: Context): Set<String> =
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getStringSet("host_exempt", emptySet()) ?: emptySet()
+
+    fun addHostExempt(context: Context, host: String) {
+        if (host.isBlank()) return
+        val set = hostExempts(context).toMutableSet()
+        set.add(host.lowercase())
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putStringSet("host_exempt", set).apply()
+    }
+
+    fun removeHostExempt(context: Context, host: String) {
+        val set = hostExempts(context).toMutableSet()
+        set.remove(host.lowercase())
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putStringSet("host_exempt", set).apply()
+    }
+
     fun blockedCount(context: Context): Long =
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getLong(KEY_COUNT, 0)
 

@@ -275,3 +275,32 @@ Java_com_downloadsource_core_ZeroCore_nativeDarkenRgb565(JNIEnv* env, jobject, j
     }
     env->ReleaseShortArrayElements(pixels, data, 0);
 }
+
+// 黑屏自检：分析一帧 ARGB 像素，返回 [平均亮度, 近黑占比, 暗色占比]
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_downloadsource_core_ZeroCore_nativeFrameStats(JNIEnv* env, jobject, jintArray pixels, jint count) {
+    if (pixels == nullptr || count <= 0) return nullptr;
+    jint* data = env->GetIntArrayElements(pixels, nullptr);
+    if (data == nullptr) return nullptr;
+    long long sum = 0;
+    long black = 0, dark = 0;
+    for (int i = 0; i < count; i++) {
+        jint p = data[i];
+        int r = (p >> 16) & 0xFF;
+        int g = (p >> 8) & 0xFF;
+        int b = p & 0xFF;
+        int l = (r * 77 + g * 150 + b * 29) >> 8;
+        sum += l;
+        if (l < 18) black++;
+        else if (l < 60) dark++;
+    }
+    env->ReleaseIntArrayElements(pixels, data, 0);
+    jfloat vals[3];
+    vals[0] = (jfloat)((double)sum / (double)count);
+    vals[1] = (jfloat)((double)black / (double)count);
+    vals[2] = (jfloat)((double)dark / (double)count);
+    jfloatArray out = env->NewFloatArray(3);
+    if (out == nullptr) return nullptr;
+    env->SetFloatArrayRegion(out, 0, 3, vals);
+    return out;
+}

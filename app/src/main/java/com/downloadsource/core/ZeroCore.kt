@@ -28,6 +28,7 @@ object ZeroCore {
     private external fun nativeProbeZipKind(path: String): String?
     private external fun nativeFitScale(contentW: Int, deviceW: Int): Int
     private external fun nativeDarkenRgb565(pixels: ShortArray, count: Int, factor: Int)
+    private external fun nativeFrameStats(pixels: IntArray, count: Int): FloatArray?
 
     // --- 暴露给业务的降级方法 ---
 
@@ -87,6 +88,31 @@ object ZeroCore {
         if (isLoaded) runCatching { nativeFitScale(contentW, deviceW).takeIf { it in 10..100 }?.let { return it } }
         if (contentW <= 0 || deviceW <= 0) return 100
         return ((deviceW.toDouble() * 100.0 / contentW).toInt()).coerceIn(10, 100)
+    }
+
+    /** 一帧画面的亮度统计：平均亮度 / 近黑占比 / 暗色占比（黑屏自检用） */
+    data class FrameStats(val meanLuma: Float, val blackRatio: Float, val darkRatio: Float)
+
+    fun frameStats(pixels: IntArray): FrameStats {
+        if (isLoaded) runCatching {
+            nativeFrameStats(pixels, pixels.size)?.takeIf { it.size >= 3 }?.let {
+                return FrameStats(it[0], it[1], it[2])
+            }
+        }
+        if (pixels.isEmpty()) return FrameStats(255f, 0f, 0f)
+        var sum = 0L
+        var black = 0L
+        var dark = 0L
+        for (p in pixels) {
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            val l = (r * 77 + g * 150 + b * 29) shr 8
+            sum += l
+            if (l < 18) black++ else if (l < 60) dark++
+        }
+        val n = pixels.size.toFloat()
+        return FrameStats(sum / n, black / n, dark / n)
     }
 
     /** C 层逐像素压暗 RGB565（供深色导出用） */
